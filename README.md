@@ -31,15 +31,8 @@ Um sistema completo de gerenciamento de IPTV desenvolvido com Next.js, React, No
 
 ### Planos e Assinaturas
 - Múltiplos planos de assinatura
-- Controle de canais por plano
 - Renovação automática
 - Histórico de pagamentos
-
-### Canais de TV
-- Catálogo completo de canais
-- Categorização (Entretenimento, Esportes, Filmes, etc.)
-- Qualidade HD/FHD/4K
-- URLs de streaming
 
 ### Sistema de Recompensas
 - Pontos por indicações
@@ -194,4 +187,4 @@ Este projeto está sob a licença MIT. Veja o arquivo LICENSE para mais detalhes
 
 ## 📞 Suporte
 
-Para suporte e dúvidas, entre em contato através do email: suporte@iptvmanager.com
+Para suporte e dúvidas, entre em contato através do email: kmkz.clan@gmail.com
