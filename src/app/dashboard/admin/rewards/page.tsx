@@ -24,8 +24,6 @@ import {
 import { useRouter } from 'next/navigation'
 import Sidebar from '../../../components/Sidebar'
 import CustomSelect from '../../../components/CustomSelect'
-import { apiFetch, apiFetchJson } from '../../../../lib/api'
-import { useAuthenticatedUser } from '../../../hooks/useAuthenticatedUser'
 
 interface Reward {
   id: string
@@ -76,6 +74,7 @@ export default function AdminRewardsPage() {
   const [rewards, setRewards] = useState<Reward[]>([])
   const [redemptions, setRedemptions] = useState<RewardRedemption[]>([])
   const [stats, setStats] = useState<RewardsStats | null>(null)
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -98,22 +97,55 @@ export default function AdminRewardsPage() {
     active: true
   })
   const router = useRouter()
-  const { user: currentUser, loading: authLoading, logout } = useAuthenticatedUser('admin')
 
   useEffect(() => {
-    if (authLoading || !currentUser) {
+    const token = localStorage.getItem('token')
+    if (!token) {
+      router.push('/login')
       return
     }
 
-    void fetchRewardsData()
-  }, [authLoading, currentUser])
+    // Decode token to get user info
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]))
+      if (payload.role !== 'admin') {
+        router.push('/dashboard/client')
+        return
+      }
+      
+      setCurrentUser({
+        id: payload.userId,
+        name: payload.name,
+        email: payload.email,
+        role: payload.role
+      })
+      
+      fetchRewardsData(token)
+    } catch (error) {
+      console.error('Token decode error:', error)
+      router.push('/login')
+    }
+  }, [])
 
-  const fetchRewardsData = async () => {
+
+
+  const fetchRewardsData = async (token: string) => {
     try {
       setError('')
+      // Buscando dados reais da API
       const [rewardsResponse, redemptionsResponse] = await Promise.all([
-        apiFetch('/admin/rewards'),
-        apiFetch('/admin/rewards/redemptions')
+        fetch('http://localhost:3001/api/admin/rewards', {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
+        }),
+        fetch('http://localhost:3001/api/admin/rewards/redemptions', {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
+        })
       ])
 
       if (!rewardsResponse.ok || !redemptionsResponse.ok) {
@@ -144,24 +176,38 @@ export default function AdminRewardsPage() {
     }
   }
 
+  const handleLogout = () => {
+    localStorage.removeItem('token')
+    router.push('/login')
+  }
+
   // Função para excluir recompensa
   const handleDeleteReward = async (rewardId: string) => {
     if (!confirm('Tem certeza que deseja excluir esta recompensa?')) return
     
     setActionLoading(true)
     try {
-      await apiFetchJson(`/admin/rewards/${rewardId}`, {
+      const token = localStorage.getItem('token')
+      const response = await fetch(`/api/admin/rewards/${rewardId}`, {
         method: 'DELETE',
         headers: {
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         }
       })
-      setRewards(prev => prev.filter(reward => reward.id !== rewardId))
-      setSuccess('Recompensa excluída com sucesso!')
-      setTimeout(() => setSuccess(''), 3000)
+
+      if (response.ok) {
+        // Atualizar a lista de recompensas
+        setRewards(prev => prev.filter(reward => reward.id !== rewardId))
+        setSuccess('Recompensa excluída com sucesso!')
+        setTimeout(() => setSuccess(''), 3000)
+      } else {
+        const error = await response.text()
+        setError(`Erro ao excluir recompensa: ${error}`)
+      }
     } catch (error) {
       console.error('Erro ao excluir recompensa:', error)
-      setError(error instanceof Error ? error.message : 'Erro ao excluir recompensa')
+      setError('Erro ao excluir recompensa')
     } finally {
       setActionLoading(false)
     }
@@ -171,22 +217,31 @@ export default function AdminRewardsPage() {
   const handleApproveRedemption = async (redemptionId: string) => {
     setActionLoading(true)
     try {
-      await apiFetchJson(`/admin/rewards/redemptions/${redemptionId}/approve`, {
+      const token = localStorage.getItem('token')
+      const response = await fetch(`/api/admin/rewards/redemptions/${redemptionId}/approve`, {
         method: 'POST',
         headers: {
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         }
       })
-      setRedemptions(prev => prev.map(redemption => 
-        redemption.id === redemptionId 
-          ? { ...redemption, status: 'approved' as const }
-          : redemption
-      ))
-      setSuccess('Resgate aprovado com sucesso!')
-      setTimeout(() => setSuccess(''), 3000)
+
+      if (response.ok) {
+        // Atualizar o status do resgate
+        setRedemptions(prev => prev.map(redemption => 
+          redemption.id === redemptionId 
+            ? { ...redemption, status: 'approved' as const }
+            : redemption
+        ))
+        setSuccess('Resgate aprovado com sucesso!')
+        setTimeout(() => setSuccess(''), 3000)
+      } else {
+        const error = await response.text()
+        setError(`Erro ao aprovar resgate: ${error}`)
+      }
     } catch (error) {
       console.error('Erro ao aprovar resgate:', error)
-      setError(error instanceof Error ? error.message : 'Erro ao aprovar resgate')
+      setError('Erro ao aprovar resgate')
     } finally {
       setActionLoading(false)
     }
@@ -198,22 +253,31 @@ export default function AdminRewardsPage() {
     
     setActionLoading(true)
     try {
-      await apiFetchJson(`/admin/rewards/redemptions/${redemptionId}/reject`, {
+      const token = localStorage.getItem('token')
+      const response = await fetch(`/api/admin/rewards/redemptions/${redemptionId}/reject`, {
         method: 'POST',
         headers: {
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         }
       })
-      setRedemptions(prev => prev.map(redemption => 
-        redemption.id === redemptionId 
-          ? { ...redemption, status: 'cancelled' as const }
-          : redemption
-      ))
-      setSuccess('Resgate rejeitado com sucesso!')
-      setTimeout(() => setSuccess(''), 3000)
+
+      if (response.ok) {
+        // Atualizar o status do resgate
+        setRedemptions(prev => prev.map(redemption => 
+          redemption.id === redemptionId 
+            ? { ...redemption, status: 'cancelled' as const }
+            : redemption
+        ))
+        setSuccess('Resgate rejeitado com sucesso!')
+        setTimeout(() => setSuccess(''), 3000)
+      } else {
+        const error = await response.text()
+        setError(`Erro ao rejeitar resgate: ${error}`)
+      }
     } catch (error) {
       console.error('Erro ao rejeitar resgate:', error)
-      setError(error instanceof Error ? error.message : 'Erro ao rejeitar resgate')
+      setError('Erro ao rejeitar resgate')
     } finally {
       setActionLoading(false)
     }
@@ -242,9 +306,12 @@ ${redemption.notes ? `Observações: ${redemption.notes}` : ''}
   const createReward = async () => {
     try {
       setActionLoading(true)
-      const data = await apiFetchJson<{ reward: Reward }>('/admin/rewards', {
+      const token = localStorage.getItem('token')
+      
+      const response = await fetch('http://localhost:3001/api/admin/rewards', {
         method: 'POST',
         headers: {
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
@@ -252,6 +319,12 @@ ${redemption.notes ? `Observações: ${redemption.notes}` : ''}
           terms: createFormData.terms.filter(term => term.trim() !== '')
         })
       })
+
+      if (!response.ok) {
+        throw new Error('Erro ao criar recompensa')
+      }
+
+      const data = await response.json()
       
       // Adicionar a nova recompensa à lista
       setRewards(prev => [...prev, data.reward])
@@ -338,7 +411,7 @@ ${redemption.notes ? `Observações: ${redemption.notes}` : ''}
     return matchesSearch && matchesStatus
   })
 
-  if (loading || authLoading) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-purple-900 flex items-center justify-center">
         <div className="text-white text-xl">Carregando...</div>
@@ -351,7 +424,7 @@ ${redemption.notes ? `Observações: ${redemption.notes}` : ''}
       <Sidebar 
         userRole="admin" 
         userName={currentUser?.name || ''} 
-        onLogout={logout}
+        onLogout={handleLogout} 
       />
       
       <main className="flex-1 p-8">

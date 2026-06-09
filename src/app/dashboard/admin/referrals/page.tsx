@@ -23,8 +23,6 @@ import {
 import { useRouter } from 'next/navigation'
 import Sidebar from '../../../components/Sidebar'
 import CustomSelect from '../../../components/CustomSelect'
-import { apiFetchJson } from '../../../../lib/api'
-import { useAuthenticatedUser } from '../../../hooks/useAuthenticatedUser'
 
 interface Referral {
   id: string
@@ -78,6 +76,7 @@ export default function AdminReferralsPage() {
   const [stats, setStats] = useState<ReferralStats | null>(null)
   const [topReferrers, setTopReferrers] = useState<TopReferrer[]>([])
   const [actionLoading, setActionLoading] = useState(false)
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -86,23 +85,62 @@ export default function AdminReferralsPage() {
   const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'completed' | 'cancelled'>('all')
   const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'week' | 'month'>('all')
   const router = useRouter()
-  const { user: currentUser, loading: authLoading, logout } = useAuthenticatedUser('admin')
 
   useEffect(() => {
-    if (authLoading || !currentUser) {
+    const token = localStorage.getItem('token')
+    if (!token) {
+      router.push('/login')
       return
     }
 
-    void fetchReferralsData()
-  }, [authLoading, currentUser])
+    // Decode token to get user info
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]))
+      if (payload.role !== 'admin') {
+        router.push('/dashboard/client')
+        return
+      }
+      
+      setCurrentUser({
+        id: payload.userId,
+        name: payload.name,
+        email: payload.email,
+        role: payload.role
+      })
+      
+      fetchReferralsData(token)
+    } catch (error) {
+      console.error('Token decode error:', error)
+      router.push('/login')
+    }
+  }, [])
 
-  const fetchReferralsData = async () => {
+
+
+  const fetchReferralsData = async (token: string) => {
     try {
       setError('')
+      // Dados reais da API
+       const [referralsRes, statsRes, topReferrersRes] = await Promise.all([
+         fetch('http://localhost:3001/api/admin/referrals', {
+           headers: { Authorization: `Bearer ${token}` }
+         }),
+         fetch('http://localhost:3001/api/admin/referrals/stats', {
+           headers: { Authorization: `Bearer ${token}` }
+         }),
+         fetch('http://localhost:3001/api/admin/referrals/top-referrers', {
+           headers: { Authorization: `Bearer ${token}` }
+         })
+      ])
+
+      if (!referralsRes.ok || !statsRes.ok || !topReferrersRes.ok) {
+        throw new Error('Erro ao buscar dados')
+      }
+
       const [referralsData, statsData, topReferrersData] = await Promise.all([
-        apiFetchJson<{ referrals: Referral[] }>('/admin/referrals'),
-        apiFetchJson<ReferralStats>('/admin/referrals/stats'),
-        apiFetchJson<TopReferrer[]>('/admin/referrals/top-referrers')
+        referralsRes.json(),
+        statsRes.json(),
+        topReferrersRes.json()
       ])
 
       setReferrals(referralsData.referrals || [])
@@ -114,6 +152,11 @@ export default function AdminReferralsPage() {
       setError('Erro ao carregar dados das indicações')
       setLoading(false)
     }
+  }
+
+  const handleLogout = () => {
+    localStorage.removeItem('token')
+    router.push('/login')
   }
 
   const formatDate = (dateString: string) => {
@@ -132,17 +175,27 @@ export default function AdminReferralsPage() {
     
     setActionLoading(true)
     try {
-      await apiFetchJson(`/admin/referrals/${referralId}/approve`, {
+      const token = localStorage.getItem('token')
+      const response = await fetch(`http://localhost:3001/api/admin/referrals/${referralId}/approve`, {
         method: 'POST',
         headers: {
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         }
       })
-      await fetchReferralsData()
-      setSuccess('Indicação aprovada com sucesso!')
+
+      if (response.ok) {
+        // Atualizar a lista de indicações
+        const token = localStorage.getItem('token')
+        if (token) await fetchReferralsData(token)
+        setSuccess('Indicação aprovada com sucesso!')
+      } else {
+        const error = await response.text()
+        alert(`Erro ao aprovar indicação: ${error}`)
+      }
     } catch (error) {
       console.error('Erro ao aprovar indicação:', error)
-      alert(error instanceof Error ? error.message : 'Erro ao aprovar indicação')
+      alert('Erro ao aprovar indicação')
     } finally {
       setActionLoading(false)
     }
@@ -154,17 +207,27 @@ export default function AdminReferralsPage() {
     
     setActionLoading(true)
     try {
-      await apiFetchJson(`/admin/referrals/${referralId}/cancel`, {
+      const token = localStorage.getItem('token')
+      const response = await fetch(`http://localhost:3001/api/admin/referrals/${referralId}/cancel`, {
         method: 'POST',
         headers: {
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         }
       })
-      await fetchReferralsData()
-      setSuccess('Indicação cancelada com sucesso!')
+
+      if (response.ok) {
+        // Atualizar a lista de indicações
+        const token = localStorage.getItem('token')
+        if (token) await fetchReferralsData(token)
+        setSuccess('Indicação cancelada com sucesso!')
+      } else {
+        const error = await response.text()
+        alert(`Erro ao cancelar indicação: ${error}`)
+      }
     } catch (error) {
       console.error('Erro ao cancelar indicação:', error)
-      alert(error instanceof Error ? error.message : 'Erro ao cancelar indicação')
+      alert('Erro ao cancelar indicação')
     } finally {
       setActionLoading(false)
     }
@@ -218,7 +281,7 @@ Recompensa Concedida: ${referral.reward_given ? 'Sim' : 'Não'}
     return matchesSearch && matchesStatus
   }) : []
 
-  if (loading || authLoading) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-purple-900 flex items-center justify-center">
         <div className="text-white text-xl">Carregando...</div>
@@ -231,7 +294,7 @@ Recompensa Concedida: ${referral.reward_given ? 'Sim' : 'Não'}
       <Sidebar 
         userRole="admin" 
         userName={currentUser?.name || ''} 
-        onLogout={logout}
+        onLogout={handleLogout} 
       />
       
       <main className="flex-1 p-8">

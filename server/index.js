@@ -3,190 +3,14 @@ const cors = require('cors')
 const mysql = require('mysql2/promise')
 const bcrypt = require('bcryptjs')
 const jwt = require('jsonwebtoken')
-const crypto = require('crypto')
 require('dotenv').config()
 
 const app = express()
-const NODE_ENV = process.env.NODE_ENV || 'development'
-const IS_PRODUCTION = NODE_ENV === 'production'
 const PORT = process.env.API_PORT || 3001
-const APP_ORIGIN = process.env.APP_URL || process.env.NEXTAUTH_URL || 'http://localhost:3000'
-const AUTH_COOKIE_NAME = 'auth_token'
-const SESSION_COOKIE_SECURE = process.env.SESSION_COOKIE_SECURE
-  ? process.env.SESSION_COOKIE_SECURE === 'true'
-  : IS_PRODUCTION
-const JWT_SECRET_PLACEHOLDERS = new Set([
-  'fallback-secret',
-  'your-super-secret-jwt-key-change-this',
-  'your-super-secure-jwt-secret-for-production-change-this'
-])
-
-function getJwtSecret() {
-  const configuredSecret = process.env.JWT_SECRET?.trim()
-
-  if (configuredSecret && configuredSecret.length >= 32 && !JWT_SECRET_PLACEHOLDERS.has(configuredSecret)) {
-    return configuredSecret
-  }
-
-  if (IS_PRODUCTION) {
-    console.error('JWT_SECRET ausente ou inseguro. Configure uma chave forte com pelo menos 32 caracteres.')
-    process.exit(1)
-  }
-
-  console.warn('JWT_SECRET nao configurado com seguranca. Usando segredo temporario apenas para desenvolvimento.')
-  return crypto.randomBytes(32).toString('hex')
-}
-
-const JWT_SECRET = getJwtSecret()
-const allowedOrigins = new Set(
-  [
-    process.env.CORS_ORIGIN,
-    process.env.APP_URL,
-    process.env.NEXTAUTH_URL,
-    !IS_PRODUCTION ? 'http://localhost:3000' : null,
-    !IS_PRODUCTION ? 'http://127.0.0.1:3000' : null
-  ]
-    .flatMap(value => (value ? value.split(',') : []))
-    .map(value => value.trim())
-    .filter(Boolean)
-)
-
-function parseCookieHeader(cookieHeader = '') {
-  return cookieHeader.split(';').reduce((cookies, part) => {
-    const [rawName, ...rawValue] = part.trim().split('=')
-
-    if (!rawName || rawValue.length === 0) {
-      return cookies
-    }
-
-    cookies[rawName] = decodeURIComponent(rawValue.join('='))
-    return cookies
-  }, {})
-}
-
-function getRequestToken(req) {
-  const authHeader = req.headers.authorization
-  const bearerToken = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null
-
-  if (bearerToken) {
-    return bearerToken
-  }
-
-  const cookies = parseCookieHeader(req.headers.cookie)
-  return cookies[AUTH_COOKIE_NAME] || null
-}
-
-function getCookieOptions() {
-  return {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: SESSION_COOKIE_SECURE,
-    path: '/',
-    maxAge: 7 * 24 * 60 * 60 * 1000
-  }
-}
-
-function parseBoundedInteger(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
-  if (typeof value !== 'string' || !/^\d+$/.test(value)) {
-    return fallback
-  }
-
-  const parsed = Number.parseInt(value, 10)
-
-  if (!Number.isFinite(parsed)) {
-    return fallback
-  }
-
-  return Math.min(max, Math.max(min, parsed))
-}
-
-function getPagination(query, defaultLimit = 10, maxLimit = 100) {
-  const page = parseBoundedInteger(query.page, 1, { min: 1, max: 100000 })
-  const limit = parseBoundedInteger(query.limit, defaultLimit, { min: 1, max: maxLimit })
-  const offset = (page - 1) * limit
-
-  return { page, limit, offset }
-}
-
-function isValidEmail(email) {
-  return typeof email === 'string' && email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
-}
-
-function createRateLimiter({ windowMs, maxRequests, keyGenerator, message }) {
-  const hits = new Map()
-
-  return (req, res, next) => {
-    const now = Date.now()
-    const key = keyGenerator(req)
-    const current = hits.get(key)
-
-    if (!current || current.resetAt <= now) {
-      hits.set(key, { count: 1, resetAt: now + windowMs })
-      return next()
-    }
-
-    if (current.count >= maxRequests) {
-      const retryAfterSeconds = Math.ceil((current.resetAt - now) / 1000)
-      res.set('Retry-After', String(retryAfterSeconds))
-      return res.status(429).json({ message })
-    }
-
-    current.count += 1
-    hits.set(key, current)
-    next()
-  }
-}
-
-const authRateLimiter = createRateLimiter({
-  windowMs: 15 * 60 * 1000,
-  maxRequests: 10,
-  keyGenerator: (req) => `${req.ip}:${typeof req.body?.email === 'string' ? req.body.email.toLowerCase() : 'anonymous'}`,
-  message: 'Muitas tentativas. Tente novamente em alguns minutos.'
-})
-
-function requireTrustedWriteRequest(req, res, next) {
-  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
-    return next()
-  }
-
-  const origin = req.get('origin')
-  const requestedWith = req.get('x-requested-with')
-
-  if (origin && allowedOrigins.size > 0 && !allowedOrigins.has(origin)) {
-    return res.status(403).json({ message: 'Origem nao permitida' })
-  }
-
-  if (requestedWith !== 'XMLHttpRequest') {
-    return res.status(403).json({ message: 'Requisicao invalida' })
-  }
-
-  next()
-}
 
 // Middleware
-app.disable('x-powered-by')
-app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.size === 0 || allowedOrigins.has(origin)) {
-      return callback(null, true)
-    }
-
-    callback(new Error('CORS origin not allowed'))
-  },
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  credentials: true,
-  maxAge: 86400
-}))
-app.use(express.json({ limit: '100kb' }))
-app.use(requireTrustedWriteRequest)
-app.use((req, res, next) => {
-  res.setHeader('X-Content-Type-Options', 'nosniff')
-  res.setHeader('X-Frame-Options', 'DENY')
-  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
-  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
-  next()
-})
+app.use(cors())
+app.use(express.json())
 
 // Database connection
 const dbConfig = {
@@ -224,13 +48,14 @@ async function testConnection(retries = 5, delay = 5000) {
 
 // JWT middleware
 const authenticateToken = (req, res, next) => {
-  const token = getRequestToken(req)
+  const authHeader = req.headers['authorization']
+  const token = authHeader && authHeader.split(' ')[1]
 
   if (!token) {
     return res.status(401).json({ message: 'Token de acesso requerido' })
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
+  jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret', (err, user) => {
     if (err) {
       return res.status(403).json({ message: 'Token inválido' })
     }
@@ -247,21 +72,13 @@ app.get('/api/health', (req, res) => {
 })
 
 // Auth routes
-app.post('/api/auth/register', authRateLimiter, async (req, res) => {
+app.post('/api/auth/register', async (req, res) => {
   try {
     const { name, email, password, phone, referralCode } = req.body
 
     // Validate required fields
     if (!name || !email || !password) {
       return res.status(400).json({ message: 'Nome, email e senha são obrigatórios' })
-    }
-
-    if (!isValidEmail(email)) {
-      return res.status(400).json({ message: 'Email inválido' })
-    }
-
-    if (typeof password !== 'string' || password.length < 8) {
-      return res.status(400).json({ message: 'A senha deve ter pelo menos 8 caracteres' })
     }
 
     // Check if user already exists
@@ -333,7 +150,6 @@ app.post('/api/auth/register', authRateLimiter, async (req, res) => {
       await connection.commit()
       connection.release()
 
-      res.set('Cache-Control', 'no-store')
       res.status(201).json({ 
         message: 'Conta criada com sucesso',
         user: { id: userId, name, email, role: 'client' }
@@ -349,17 +165,13 @@ app.post('/api/auth/register', authRateLimiter, async (req, res) => {
   }
 })
 
-app.post('/api/auth/login', authRateLimiter, async (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body
 
     // Validate required fields
     if (!email || !password) {
       return res.status(400).json({ message: 'Email e senha são obrigatórios' })
-    }
-
-    if (!isValidEmail(email)) {
-      return res.status(400).json({ message: 'Email inválido' })
     }
 
     // Find user
@@ -399,12 +211,10 @@ app.post('/api/auth/login', authRateLimiter, async (req, res) => {
         email: user.email, 
         role: user.role 
       },
-      JWT_SECRET,
+      process.env.JWT_SECRET || 'fallback-secret',
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     )
 
-    res.set('Cache-Control', 'no-store')
-    res.cookie(AUTH_COOKIE_NAME, token, getCookieOptions())
     res.json({
       message: 'Login realizado com sucesso',
       token,
@@ -419,15 +229,6 @@ app.post('/api/auth/login', authRateLimiter, async (req, res) => {
     console.error('Login error:', error)
     res.status(500).json({ message: 'Erro interno do servidor' })
   }
-})
-
-app.post('/api/auth/logout', (req, res) => {
-  res.clearCookie(AUTH_COOKIE_NAME, {
-    ...getCookieOptions(),
-    maxAge: undefined
-  })
-  res.set('Cache-Control', 'no-store')
-  res.json({ message: 'Logout realizado com sucesso' })
 })
 
 // Protected routes
@@ -685,7 +486,7 @@ app.delete('/api/admin/users/:id', authenticateToken, requireAdmin, async (req, 
     const user = users[0]
 
     // Prevent admin from deleting themselves
-    if (req.user.userId === id) {
+    if (req.user.id === id) {
       return res.status(400).json({ message: 'Você não pode excluir sua própria conta' })
     }
 
@@ -870,8 +671,8 @@ app.patch('/api/admin/subscriptions/:id/status', authenticateToken, requireAdmin
 // Get all rewards (admin only)
 app.get('/api/admin/rewards', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { type = '', active = '' } = req.query
-    const { page, limit, offset } = getPagination(req.query, 10, 100)
+    const { page = 1, limit = 10, type = '', active = '' } = req.query
+    const offset = (page - 1) * limit
 
     let whereClause = 'WHERE 1=1'
     const params = []
@@ -886,8 +687,11 @@ app.get('/api/admin/rewards', authenticateToken, requireAdmin, async (req, res) 
       params.push(active === 'true')
     }
 
+    const finalLimit = parseInt(limit);
+    const finalOffset = parseInt(offset);
+    
     const [rewards] = await pool.execute(
-      `SELECT * FROM rewards ${whereClause} ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`
+      `SELECT * FROM rewards ${whereClause} ORDER BY created_at DESC LIMIT ${finalLimit} OFFSET ${finalOffset}`
     )
 
     const [totalCount] = await pool.execute(
@@ -923,8 +727,8 @@ app.get('/api/admin/rewards', authenticateToken, requireAdmin, async (req, res) 
     res.json({
       rewards: mappedRewards,
       pagination: {
-        page,
-        limit,
+        page: parseInt(page),
+        limit: parseInt(limit),
         total: totalCount[0].total,
         pages: Math.ceil(totalCount[0].total / limit)
       }
@@ -1056,8 +860,8 @@ app.delete('/api/admin/rewards/:id', authenticateToken, requireAdmin, async (req
 // Get reward redemptions (admin only) - rota alternativa
 app.get('/api/admin/rewards/redemptions', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { status = '' } = req.query
-    const { page, limit, offset } = getPagination(req.query, 10, 100)
+    const { page = 1, limit = 10, status = '' } = req.query
+    const offset = (page - 1) * limit
 
     let whereClause = 'WHERE 1=1'
     const params = []
@@ -1067,6 +871,9 @@ app.get('/api/admin/rewards/redemptions', authenticateToken, requireAdmin, async
       params.push(status)
     }
 
+    const finalLimit = parseInt(limit);
+    const finalOffset = parseInt(offset);
+    
     const [redemptions] = await pool.execute(
       `SELECT rr.*, u.name as client_name, u.email as client_email, r.name as reward_title
        FROM reward_redemptions rr
@@ -1075,7 +882,7 @@ app.get('/api/admin/rewards/redemptions', authenticateToken, requireAdmin, async
        JOIN rewards r ON rr.reward_id = r.id
        ${whereClause}
        ORDER BY rr.redeemed_at DESC
-       LIMIT ${limit} OFFSET ${offset}`
+       LIMIT ${finalLimit} OFFSET ${finalOffset}`
     )
 
     const [totalCount] = await pool.execute(
@@ -1088,8 +895,8 @@ app.get('/api/admin/rewards/redemptions', authenticateToken, requireAdmin, async
     res.json({
       redemptions,
       pagination: {
-        page,
-        limit,
+        page: parseInt(page),
+        limit: parseInt(limit),
         total: totalCount[0].total,
         pages: Math.ceil(totalCount[0].total / limit)
       }
@@ -1103,8 +910,8 @@ app.get('/api/admin/rewards/redemptions', authenticateToken, requireAdmin, async
 // Get reward redemptions (admin only)
 app.get('/api/admin/reward-redemptions', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { status = '' } = req.query
-    const { page, limit, offset } = getPagination(req.query, 10, 100)
+    const { page = 1, limit = 10, status = '' } = req.query
+    const offset = (page - 1) * limit
 
     let whereClause = 'WHERE 1=1'
     const params = []
@@ -1114,6 +921,9 @@ app.get('/api/admin/reward-redemptions', authenticateToken, requireAdmin, async 
       params.push(status)
     }
 
+    const finalLimit = parseInt(limit);
+    const finalOffset = parseInt(offset);
+    
     const [redemptions] = await pool.execute(
       `SELECT rr.*, u.name as client_name, u.email as client_email, r.name as reward_name
        FROM reward_redemptions rr
@@ -1122,7 +932,7 @@ app.get('/api/admin/reward-redemptions', authenticateToken, requireAdmin, async 
        JOIN rewards r ON rr.reward_id = r.id
        ${whereClause}
        ORDER BY rr.redeemed_at DESC
-       LIMIT ${limit} OFFSET ${offset}`
+       LIMIT ${finalLimit} OFFSET ${finalOffset}`
     )
 
     const [totalCount] = await pool.execute(
@@ -1135,8 +945,8 @@ app.get('/api/admin/reward-redemptions', authenticateToken, requireAdmin, async 
     res.json({
       redemptions,
       pagination: {
-        page,
-        limit,
+        page: parseInt(page),
+        limit: parseInt(limit),
         total: totalCount[0].total,
         pages: Math.ceil(totalCount[0].total / limit)
       }
@@ -1174,8 +984,8 @@ app.patch('/api/admin/reward-redemptions/:id/status', authenticateToken, require
 // Get all referrals (admin only)
 app.get('/api/admin/referrals', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { status = '' } = req.query
-    const { page, limit, offset } = getPagination(req.query, 10, 100)
+    const { page = 1, limit = 10, status = '' } = req.query
+    const offset = (page - 1) * limit
 
     let whereClause = 'WHERE 1=1'
     const params = []
@@ -1185,6 +995,9 @@ app.get('/api/admin/referrals', authenticateToken, requireAdmin, async (req, res
       params.push(status)
     }
 
+    const finalLimit = parseInt(limit);
+    const finalOffset = parseInt(offset);
+    
     const [referrals] = await pool.execute(
       `SELECT r.*, 
               u1.name as referrer_name, u1.email as referrer_email,
@@ -1196,7 +1009,7 @@ app.get('/api/admin/referrals', authenticateToken, requireAdmin, async (req, res
        JOIN users u2 ON c2.user_id = u2.id
        ${whereClause}
        ORDER BY r.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`
+       LIMIT ${finalLimit} OFFSET ${finalOffset}`
     )
 
     const [totalCount] = await pool.execute(
@@ -1207,8 +1020,8 @@ app.get('/api/admin/referrals', authenticateToken, requireAdmin, async (req, res
     res.json({
       referrals,
       pagination: {
-        page,
-        limit,
+        page: parseInt(page),
+        limit: parseInt(limit),
         total: totalCount[0].total,
         pages: Math.ceil(totalCount[0].total / limit)
       }
@@ -1456,7 +1269,7 @@ app.get('/api/admin/referrals/stats', authenticateToken, requireAdmin, async (re
 app.get('/api/admin/referrals/top-referrers', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { limit = 10 } = req.query
-    const limitValue = parseBoundedInteger(limit, 10, { min: 1, max: 100 })
+    const limitValue = Math.max(1, Math.min(100, parseInt(limit))) // Sanitize limit
 
     const [topReferrers] = await pool.execute(
       `SELECT 
@@ -1493,7 +1306,7 @@ app.get('/api/admin/referrals/top-referrers', authenticateToken, requireAdmin, a
 app.get('/api/admin/reports', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { period = '30' } = req.query
-    const days = parseBoundedInteger(period, 30, { min: 1, max: 3650 })
+    const days = parseInt(period)
 
     // Revenue stats
     const [revenueStats] = await pool.execute(
@@ -1621,7 +1434,7 @@ app.get('/api/admin/reports', authenticateToken, requireAdmin, async (req, res) 
 app.get('/api/admin/expenses', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { period = '30', category, type } = req.query
-    const days = parseBoundedInteger(period, 30, { min: 1, max: 3650 })
+    const days = parseInt(period)
     
     let query = `
       SELECT 
@@ -1777,7 +1590,7 @@ app.get('/api/admin/expenses/categories', authenticateToken, requireAdmin, async
 app.get('/api/admin/expenses/stats', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { period = '30' } = req.query
-    const days = parseBoundedInteger(period, 30, { min: 1, max: 3650 })
+    const days = parseInt(period)
     
     // Total expenses
     const [totalStats] = await pool.execute(
@@ -2280,7 +2093,7 @@ app.get('/api/client/referrals', authenticateToken, async (req, res) => {
       completed_referrals: completedCount[0].count || 0,
       total_points_earned: pointsEarned[0].total || 0,
       points_this_month: pointsThisMonth[0].total || 0,
-      referral_link: `${APP_ORIGIN}/register?ref=${referralCode}`
+      referral_link: `http://localhost:3000/register?ref=${referralCode}`
     }
 
     // Format referrals data
@@ -2569,8 +2382,8 @@ app.get('/api/client/subscriptions', authenticateToken, async (req, res) => {
 // Get client notifications
 app.get('/api/client/notifications', authenticateToken, async (req, res) => {
   try {
-    const { unread_only = false } = req.query
-    const { page, limit, offset } = getPagination(req.query, 10, 100)
+    const { page = 1, limit = 10, unread_only = false } = req.query
+    const offset = (page - 1) * limit
 
     let whereClause = 'WHERE user_id = ?'
     const params = [req.user.userId]
@@ -2581,7 +2394,7 @@ app.get('/api/client/notifications', authenticateToken, async (req, res) => {
 
     const [notifications] = await pool.execute(
       `SELECT * FROM notifications ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-      [...params, limit, offset]
+      [...params, parseInt(limit), offset]
     )
 
     const [totalCount] = await pool.execute(
@@ -2597,8 +2410,8 @@ app.get('/api/client/notifications', authenticateToken, async (req, res) => {
     res.json({
       notifications,
       pagination: {
-        page,
-        limit,
+        page: parseInt(page),
+        limit: parseInt(limit),
         total: totalCount[0].total,
         pages: Math.ceil(totalCount[0].total / limit)
       },
@@ -2730,10 +2543,6 @@ app.delete('/api/admin/plans/:id', authenticateToken, requireAdmin, async (req, 
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  if (err.message === 'CORS origin not allowed') {
-    return res.status(403).json({ message: 'Origem nao permitida' })
-  }
-
   console.error(err.stack)
   res.status(500).json({ message: 'Algo deu errado!' })
 })
@@ -2747,14 +2556,10 @@ app.use('*', (req, res) => {
 async function startServer() {
   await testConnection()
   
-  const server = app.listen(PORT, () => {
+  app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`)
     console.log(`📊 API Health: http://localhost:${PORT}/api/health`)
   })
-
-  server.requestTimeout = 30000
-  server.headersTimeout = 35000
-  server.keepAliveTimeout = 5000
 }
 
 startServer().catch(console.error)

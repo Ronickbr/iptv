@@ -21,8 +21,6 @@ import {
 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import Sidebar from '../../../components/Sidebar'
-import { apiFetchJson } from '../../../../lib/api'
-import { useAuthenticatedUser } from '../../../hooks/useAuthenticatedUser'
 
 interface LandingPageSettings {
   site: {
@@ -122,23 +120,42 @@ interface CurrentUser {
 
 export default function LandingPageManagement() {
   const [settings, setSettings] = useState<LandingPageSettings | null>(null)
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [activeTab, setActiveTab] = useState<'site' | 'logo' | 'contact' | 'hero' | 'stats' | 'features' | 'plans' | 'footer'>('site')
   const router = useRouter()
-  const { user: currentUser, loading: authLoading, logout } = useAuthenticatedUser('admin')
 
   useEffect(() => {
-    if (authLoading || !currentUser) {
+    const token = localStorage.getItem('token')
+    if (!token) {
+      router.push('/login')
       return
     }
 
-    void fetchSettings()
-  }, [authLoading, currentUser])
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]))
+      if (payload.role !== 'admin') {
+        router.push('/dashboard/client')
+        return
+      }
+      setCurrentUser({
+        id: payload.userId,
+        name: payload.name || 'Admin',
+        email: payload.email,
+        role: payload.role
+      })
+    } catch (err) {
+      router.push('/login')
+      return
+    }
 
-  const fetchSettings = async () => {
+    fetchSettings(token)
+  }, [])
+
+  const fetchSettings = async (token: string) => {
     try {
       // Carregar configurações do localStorage ou API
       const savedSettings = localStorage.getItem('landingPageSettings')
@@ -323,6 +340,11 @@ export default function LandingPageManagement() {
     }
   }
 
+  const handleLogout = () => {
+    localStorage.removeItem('token')
+    router.push('/login')
+  }
+
   const handleSave = async () => {
     if (!settings) return
     
@@ -335,16 +357,24 @@ export default function LandingPageManagement() {
       localStorage.setItem('landingPageSettings', JSON.stringify(settings))
       
       // Tentar salvar na API
-      try {
-        await apiFetchJson('/admin/landing-page', {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ settings })
-        })
-      } catch (apiError) {
-        console.warn('API nao disponivel, salvo apenas localmente')
+      const token = localStorage.getItem('token')
+      if (token) {
+        try {
+          const response = await fetch('http://localhost:3001/api/admin/landing-page', {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ settings })
+          })
+          
+          if (!response.ok) {
+            console.warn('Erro ao salvar na API, mas salvo localmente')
+          }
+        } catch (apiError) {
+          console.warn('API não disponível, salvo apenas localmente')
+        }
       }
       
       setSuccess('Configurações salvas com sucesso!')
@@ -397,7 +427,7 @@ export default function LandingPageManagement() {
     { id: 'footer', label: 'Footer', icon: Globe }
   ]
 
-  if (loading || authLoading) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white"></div>
@@ -429,7 +459,7 @@ export default function LandingPageManagement() {
       <Sidebar 
         userRole="admin" 
         userName={currentUser?.name || 'Admin'} 
-        onLogout={logout}
+        onLogout={handleLogout} 
       />
 
       <main className="flex-1 lg:ml-0 p-4 lg:p-8 pt-16 lg:pt-8">

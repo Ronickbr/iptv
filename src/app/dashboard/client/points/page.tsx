@@ -23,8 +23,6 @@ import {
 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import Sidebar from '../../../components/Sidebar'
-import { apiFetchJson } from '../../../../lib/api'
-import { useAuthenticatedUser } from '../../../hooks/useAuthenticatedUser'
 
 interface PointsData {
   current_points: number
@@ -75,13 +73,13 @@ interface CurrentUser {
 export default function PointsPage() {
   const [pointsData, setPointsData] = useState<PointsData | null>(null)
   const [pointsHistory, setPointsHistory] = useState<PointsHistory[]>([])
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [copiedCode, setCopiedCode] = useState(false)
   const [activeTab, setActiveTab] = useState<'overview' | 'earn' | 'history'>('overview')
   const router = useRouter()
-  const { user: currentUser, loading: authLoading, logout } = useAuthenticatedUser('client')
 
   const earningMethods: EarningMethod[] = [
     {
@@ -141,16 +139,45 @@ export default function PointsPage() {
   ]
 
   useEffect(() => {
-    if (authLoading || !currentUser) {
+    const token = localStorage.getItem('token')
+    if (!token) {
+      router.push('/login')
       return
     }
 
-    void fetchPointsData()
-  }, [authLoading, currentUser])
-
-  const fetchPointsData = async () => {
     try {
-      const data = await apiFetchJson<{ pointsData: PointsData; history: PointsHistory[] }>('/client/points')
+      const payload = JSON.parse(atob(token.split('.')[1]))
+      if (payload.role !== 'client') {
+        router.push('/dashboard/admin')
+        return
+      }
+      setCurrentUser({
+        id: payload.userId,
+        name: payload.name || 'Cliente',
+        email: payload.email,
+        role: payload.role
+      })
+    } catch (err) {
+      router.push('/login')
+      return
+    }
+
+    fetchPointsData(token)
+  }, [])
+
+  const fetchPointsData = async (token: string) => {
+    try {
+      const response = await fetch('http://localhost:3001/api/client/points', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+
+      if (!response.ok) {
+        throw new Error('Erro ao carregar dados de pontos')
+      }
+
+      const data = await response.json()
       setPointsData(data.pointsData)
       setPointsHistory(data.history || [])
     } catch (err) {
@@ -159,6 +186,11 @@ export default function PointsPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleLogout = () => {
+    localStorage.removeItem('token')
+    router.push('/login')
   }
 
   const copyReferralCode = () => {
@@ -219,7 +251,7 @@ export default function PointsPage() {
     }
   }
 
-  if (loading || authLoading) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white"></div>
@@ -249,7 +281,7 @@ export default function PointsPage() {
       <Sidebar 
         userRole="client" 
         userName={currentUser?.name || 'Cliente'} 
-        onLogout={logout} 
+        onLogout={handleLogout} 
       />
 
       <main className="flex-1 lg:ml-0 p-4 lg:p-8 pt-16 lg:pt-8">

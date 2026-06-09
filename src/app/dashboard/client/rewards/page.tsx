@@ -1,22 +1,31 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { 
   Gift, 
   Star, 
   Percent,
+  Calendar,
   Clock,
   Check,
+  X,
   Coins,
   Crown,
+  Zap,
+  Heart,
   Trophy,
+  Target,
   ShoppingBag,
-  AlertTriangle
+  CreditCard,
+  Smartphone,
+  Tv,
+  Headphones,
+  AlertTriangle,
+  ExternalLink
 } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 import Sidebar from '../../../components/Sidebar'
-import { apiFetch, apiFetchJson } from '../../../../lib/api'
-import { useAuthenticatedUser } from '../../../hooks/useAuthenticatedUser'
 
 interface Reward {
   id: string
@@ -43,6 +52,13 @@ interface RedeemedReward {
   expires_at?: string
 }
 
+interface CurrentUser {
+  id: string
+  name: string
+  email: string
+  role: string
+}
+
 interface UserPoints {
   current_points: number
   level: string
@@ -52,13 +68,14 @@ export default function RewardsPage() {
   const [rewards, setRewards] = useState<Reward[]>([])
   const [redeemedRewards, setRedeemedRewards] = useState<RedeemedReward[]>([])
   const [userPoints, setUserPoints] = useState<UserPoints | null>(null)
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<'all' | 'discount' | 'product' | 'service' | 'premium'>('all')
   const [activeTab, setActiveTab] = useState<'available' | 'redeemed'>('available')
   const [showRedeemModal, setShowRedeemModal] = useState<Reward | null>(null)
-  const { user: currentUser, loading: authLoading, logout } = useAuthenticatedUser('client')
+  const router = useRouter()
 
   const categories = [
     { id: 'all', label: 'Todas', icon: Gift },
@@ -68,17 +85,43 @@ export default function RewardsPage() {
     { id: 'premium', label: 'Premium', icon: Crown }
   ]
 
-  const fetchRewardsData = useCallback(async () => {
+  useEffect(() => {
+    const token = localStorage.getItem('token')
+    const user = localStorage.getItem('user')
+    
+    if (!token || !user) {
+      router.push('/login')
+      return
+    }
+    
+    try {
+      setCurrentUser(JSON.parse(user))
+      fetchRewardsData(token)
+    } catch (error) {
+      console.error('Error parsing user data:', error)
+      router.push('/login')
+    }
+  }, [])
+
+  const fetchRewardsData = async (token: string) => {
     try {
       const [rewardsResponse, redeemedResponse, pointsResponse] = await Promise.all([
-        apiFetch('/client/rewards'),
-        apiFetch('/client/rewards/redeemed'),
-        apiFetch('/client/points')
+        fetch('http://localhost:3001/api/client/rewards', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        }),
+        fetch('http://localhost:3001/api/client/rewards/redeemed', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        }),
+        fetch('http://localhost:3001/api/client/points', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
       ])
 
       // Check for authentication errors
       if (rewardsResponse.status === 401 || rewardsResponse.status === 403) {
-        await logout()
+        localStorage.removeItem('token')
+        localStorage.removeItem('user')
+        router.push('/login')
         return
       }
 
@@ -129,15 +172,7 @@ export default function RewardsPage() {
     } finally {
       setLoading(false)
     }
-  }, [logout])
-
-  useEffect(() => {
-    if (authLoading || !currentUser) {
-      return
-    }
-    
-    void fetchRewardsData()
-  }, [authLoading, currentUser, fetchRewardsData])
+  }
 
   const getRewardIcon = (category: string) => {
     switch (category) {
@@ -159,6 +194,12 @@ export default function RewardsPage() {
     }
   }
 
+  const handleLogout = () => {
+    localStorage.removeItem('token')
+    localStorage.removeItem('user')
+    router.push('/login')
+  }
+
   const filteredRewards = rewards.filter(reward => 
     selectedCategory === 'all' || reward.category === selectedCategory
   )
@@ -170,18 +211,29 @@ export default function RewardsPage() {
     }
     
     try {
-      await apiFetchJson(`/client/rewards/${reward.id}/redeem`, {
+      const token = localStorage.getItem('token')
+      const response = await fetch(`http://localhost:3001/api/client/rewards/${reward.id}/redeem`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
           reward_id: reward.id
         })
       })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.message || 'Erro ao resgatar recompensa')
+      }
+
+      const data = await response.json()
       
       // Refresh data
-      await fetchRewardsData()
+      if (token) {
+        await fetchRewardsData(token)
+      }
       
       setShowRedeemModal(null)
       setSuccess(`Recompensa "${reward.title}" resgatada com sucesso!`)
@@ -232,7 +284,7 @@ export default function RewardsPage() {
     }
   }
 
-  if (loading || authLoading) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white"></div>
@@ -247,7 +299,7 @@ export default function RewardsPage() {
       <Sidebar 
         userRole="client" 
         userName={currentUser?.name || 'Cliente'} 
-        onLogout={logout}
+        onLogout={handleLogout} 
       />
 
       <main className="flex-1 lg:ml-0 p-4 lg:p-8 pt-16 lg:pt-8">

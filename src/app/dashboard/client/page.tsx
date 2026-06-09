@@ -15,8 +15,6 @@ import {
 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import Sidebar from '../../components/Sidebar'
-import { apiFetchJson } from '../../../lib/api'
-import { useAuthenticatedUser } from '../../hooks/useAuthenticatedUser'
 
 interface Subscription {
   id: string
@@ -42,22 +40,52 @@ interface User {
 
 export default function ClientDashboard() {
   const [stats, setStats] = useState<ClientStats | null>(null)
+  const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const router = useRouter()
-  const { user, loading: authLoading, logout } = useAuthenticatedUser('client')
 
   useEffect(() => {
-    if (authLoading || !user) {
+    const token = localStorage.getItem('token')
+    if (!token) {
+      router.push('/login')
       return
     }
 
-    void fetchStats()
-  }, [authLoading, user])
-
-  const fetchStats = async () => {
+    // Decode token to get user info
     try {
-      const data = await apiFetchJson<{ stats: ClientStats }>('/dashboard/stats')
+      const payload = JSON.parse(atob(token.split('.')[1]))
+      if (payload.role !== 'client') {
+        router.push('/dashboard/admin')
+        return
+      }
+      setUser({
+        id: payload.userId,
+        name: payload.name || 'Cliente',
+        email: payload.email,
+        role: payload.role
+      })
+    } catch (err) {
+      router.push('/login')
+      return
+    }
+
+    fetchStats(token)
+  }, [])
+
+  const fetchStats = async (token: string) => {
+    try {
+      const response = await fetch('/api/dashboard/stats', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+
+      if (!response.ok) {
+        throw new Error('Erro ao carregar estatísticas')
+      }
+
+      const data = await response.json()
       setStats(data.stats)
     } catch (err) {
       setError('Erro ao carregar dados do dashboard')
@@ -65,6 +93,11 @@ export default function ClientDashboard() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleLogout = () => {
+    localStorage.removeItem('token')
+    router.push('/login')
   }
 
   const formatDate = (dateString: string) => {
@@ -79,7 +112,7 @@ export default function ClientDashboard() {
     return diffDays > 0 ? diffDays : 0
   }
 
-  if (loading || authLoading) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white"></div>
@@ -110,7 +143,7 @@ export default function ClientDashboard() {
       <Sidebar 
         userRole="client" 
         userName={user?.name || 'Cliente'} 
-        onLogout={logout} 
+        onLogout={handleLogout} 
       />
 
       {/* Main Content */}

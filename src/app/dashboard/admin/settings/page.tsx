@@ -23,8 +23,6 @@ import {
 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import Sidebar from '../../../components/Sidebar'
-import { apiFetchJson } from '../../../../lib/api'
-import { useAuthenticatedUser } from '../../../hooks/useAuthenticatedUser'
 import CustomSelect from '../../../components/CustomSelect'
 
 interface SystemSettings {
@@ -88,6 +86,7 @@ interface CurrentUser {
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<SystemSettings | null>(null)
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -95,19 +94,47 @@ export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<'subscription' | 'payment' | 'notifications' | 'security' | 'plans' | 'downloads' | 'branding'>('subscription')
   const [showApiKey, setShowApiKey] = useState(false)
   const router = useRouter()
-  const { user: currentUser, loading: authLoading, logout } = useAuthenticatedUser('admin')
 
   useEffect(() => {
-    if (authLoading || !currentUser) {
+    const token = localStorage.getItem('token')
+    if (!token) {
+      router.push('/login')
       return
     }
 
-    void fetchSettings()
-  }, [authLoading, currentUser])
-
-  const fetchSettings = async () => {
     try {
-      const data = await apiFetchJson<{ settings: SystemSettings }>('/admin/settings')
+      const payload = JSON.parse(atob(token.split('.')[1]))
+      if (payload.role !== 'admin') {
+        router.push('/dashboard/client')
+        return
+      }
+      setCurrentUser({
+        id: payload.userId,
+        name: payload.name || 'Admin',
+        email: payload.email,
+        role: payload.role
+      })
+    } catch (err) {
+      router.push('/login')
+      return
+    }
+
+    fetchSettings(token)
+  }, [])
+
+  const fetchSettings = async (token: string) => {
+    try {
+      const response = await fetch('http://localhost:3001/api/admin/settings', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+
+      if (!response.ok) {
+        throw new Error('Erro ao carregar configurações')
+      }
+
+      const data = await response.json()
       setSettings(data.settings || {})
     } catch (err) {
       setError('Erro ao carregar configurações')
@@ -115,6 +142,11 @@ export default function SettingsPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleLogout = () => {
+    localStorage.removeItem('token')
+    router.push('/login')
   }
 
   const handleSave = async () => {
@@ -125,13 +157,24 @@ export default function SettingsPage() {
     setSuccess('')
     
     try {
-      await apiFetchJson('/admin/settings', {
+      const token = localStorage.getItem('token')
+      if (!token) {
+        router.push('/login')
+        return
+      }
+
+      const response = await fetch('http://localhost:3001/api/admin/settings', {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ settings })
       })
+
+      if (!response.ok) {
+        throw new Error('Erro ao salvar configurações')
+      }
 
       setSuccess('Configurações salvas com sucesso!')
       setTimeout(() => setSuccess(''), 3000)
@@ -164,7 +207,7 @@ export default function SettingsPage() {
     { id: 'branding', label: 'Marca', icon: Settings }
   ]
 
-  if (loading || authLoading) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white"></div>
@@ -196,7 +239,7 @@ export default function SettingsPage() {
       <Sidebar 
         userRole="admin" 
         userName={currentUser?.name || 'Admin'} 
-        onLogout={logout} 
+        onLogout={handleLogout} 
       />
 
       <main className="flex-1 lg:ml-0 p-4 lg:p-8 pt-16 lg:pt-8">

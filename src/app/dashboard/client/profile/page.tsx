@@ -37,8 +37,6 @@ import {
 import { useRouter } from 'next/navigation'
 import Sidebar from '../../../components/Sidebar'
 import CustomSelect from '../../../components/CustomSelect'
-import { apiFetchJson } from '../../../../lib/api'
-import { useAuthenticatedUser } from '../../../hooks/useAuthenticatedUser'
 
 interface UserProfile {
   id: string
@@ -92,6 +90,7 @@ interface CurrentUser {
 
 export default function ProfilePage() {
   const [profile, setProfile] = useState<UserProfile | null>(null)
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -110,7 +109,6 @@ export default function ProfilePage() {
     confirm: false
   })
   const router = useRouter()
-  const { user: currentUser, loading: authLoading, logout } = useAuthenticatedUser('client')
 
   const tabs = [
     { id: 'profile', label: 'Perfil', icon: User },
@@ -120,16 +118,45 @@ export default function ProfilePage() {
   ]
 
   useEffect(() => {
-    if (authLoading || !currentUser) {
+    const token = localStorage.getItem('token')
+    if (!token) {
+      router.push('/login')
       return
     }
 
-    void fetchProfile()
-  }, [authLoading, currentUser])
-
-  const fetchProfile = async () => {
     try {
-      const data = await apiFetchJson<{ profile: UserProfile & { preferences?: UserProfile['preferences']; stats?: UserProfile['stats'] } }>('/user/profile')
+      const payload = JSON.parse(atob(token.split('.')[1]))
+      if (payload.role !== 'client') {
+        router.push('/dashboard/admin')
+        return
+      }
+      setCurrentUser({
+        id: payload.userId,
+        name: payload.name || 'Cliente',
+        email: payload.email,
+        role: payload.role
+      })
+    } catch (err) {
+      router.push('/login')
+      return
+    }
+
+    fetchProfile(token)
+  }, [])
+
+  const fetchProfile = async (token: string) => {
+    try {
+      const response = await fetch('http://localhost:3001/api/user/profile', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+
+      if (!response.ok) {
+        throw new Error('Erro ao carregar perfil')
+      }
+
+      const data = await response.json()
       const profileData = {
         ...data.profile,
         preferences: data.profile.preferences || {
@@ -163,15 +190,27 @@ export default function ProfilePage() {
     }
   }
 
+  const handleLogout = () => {
+    localStorage.removeItem('token')
+    router.push('/login')
+  }
+
   const handleSaveProfile = async () => {
     try {
       setError('')
       setSuccess('')
 
-      await apiFetchJson('/client/profile', {
+      const token = localStorage.getItem('token')
+      if (!token) {
+        router.push('/login')
+        return
+      }
+
+      const response = await fetch('http://localhost:3001/api/client/profile', {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
           name: editedProfile.name,
@@ -180,6 +219,10 @@ export default function ProfilePage() {
           address: editedProfile.address
         })
       })
+
+      if (!response.ok) {
+        throw new Error('Erro ao salvar perfil')
+      }
       
       setProfile(editedProfile as UserProfile)
       setIsEditing(false)
@@ -246,7 +289,7 @@ export default function ProfilePage() {
     }
   }
 
-  if (loading || authLoading) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white"></div>
@@ -276,7 +319,7 @@ export default function ProfilePage() {
       <Sidebar 
         userRole="client" 
         userName={currentUser?.name || 'Cliente'} 
-        onLogout={logout} 
+        onLogout={handleLogout} 
       />
 
       <main className="flex-1 lg:ml-0 p-4 lg:p-8 pt-16 lg:pt-8">

@@ -20,8 +20,6 @@ import {
 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import Sidebar from '../../../components/Sidebar'
-import { apiFetchJson } from '../../../../lib/api'
-import { useAuthenticatedUser } from '../../../hooks/useAuthenticatedUser'
 
 interface ReferralData {
   referral_code: string
@@ -65,6 +63,7 @@ export default function ClientReferralsPage() {
   const [referralData, setReferralData] = useState<ReferralData | null>(null)
   const [referrals, setReferrals] = useState<Referral[]>([])
   const [rewards, setRewards] = useState<ReferralReward[]>([])
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -72,19 +71,47 @@ export default function ClientReferralsPage() {
   const [copiedLink, setCopiedLink] = useState(false)
   const [activeTab, setActiveTab] = useState<'overview' | 'referrals' | 'rewards'>('overview')
   const router = useRouter()
-  const { user: currentUser, loading: authLoading, logout } = useAuthenticatedUser('client')
 
   useEffect(() => {
-    if (authLoading || !currentUser) {
+    const token = localStorage.getItem('token')
+    if (!token) {
+      router.push('/login')
       return
     }
 
-    void fetchReferralData()
-  }, [authLoading, currentUser])
-
-  const fetchReferralData = async () => {
     try {
-      const data = await apiFetchJson<{ referralData: ReferralData; referrals: Referral[]; rewards: ReferralReward[] }>('/client/referrals')
+      const payload = JSON.parse(atob(token.split('.')[1]))
+      if (payload.role !== 'client') {
+        router.push('/dashboard/admin')
+        return
+      }
+      setCurrentUser({
+        id: payload.userId,
+        name: payload.name || 'Cliente',
+        email: payload.email,
+        role: payload.role
+      })
+    } catch (err) {
+      router.push('/login')
+      return
+    }
+
+    fetchReferralData(token)
+  }, [])
+
+  const fetchReferralData = async (token: string) => {
+    try {
+      const response = await fetch('http://localhost:3001/api/client/referrals', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+
+      if (!response.ok) {
+        throw new Error('Erro ao carregar dados de indicações')
+      }
+
+      const data = await response.json()
       setReferralData(data.referralData || {})
       setReferrals(data.referrals || [])
       setRewards(data.rewards || [])
@@ -94,6 +121,11 @@ export default function ClientReferralsPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleLogout = () => {
+    localStorage.removeItem('token')
+    router.push('/login')
   }
 
   const copyToClipboard = async (text: string, type: 'code' | 'link') => {
@@ -176,7 +208,7 @@ export default function ClientReferralsPage() {
     }
   }
 
-  if (loading || authLoading) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white"></div>
@@ -206,7 +238,7 @@ export default function ClientReferralsPage() {
       <Sidebar 
         userRole="client" 
         userName={currentUser?.name || 'Cliente'} 
-        onLogout={logout}
+        onLogout={handleLogout} 
       />
 
       <main className="flex-1 lg:ml-0 p-4 lg:p-8 pt-16 lg:pt-8">

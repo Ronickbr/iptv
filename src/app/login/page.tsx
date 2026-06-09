@@ -6,7 +6,6 @@ import { Eye, EyeOff, ArrowLeft } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import Image from 'next/image'
-import { apiFetchJson, clearLegacyToken } from '../../lib/api'
 
 export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false)
@@ -24,8 +23,7 @@ export default function LoginPage() {
     setError('')
 
     try {
-      clearLegacyToken()
-      const data = await apiFetchJson<{ user: { role: 'admin' | 'client' } }>('/auth/login', {
+      const response = await fetch('http://localhost:3001/api/auth/login', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -33,13 +31,23 @@ export default function LoginPage() {
         body: JSON.stringify(formData),
       })
 
-      if (data.user.role === 'admin') {
-        router.replace('/dashboard/admin')
+      const data = await response.json()
+
+      if (response.ok) {
+        // Store token in localStorage or cookie
+        localStorage.setItem('token', data.token)
+        
+        // Redirect based on user role
+        if (data.user.role === 'admin') {
+          router.push('/dashboard/admin')
+        } else {
+          router.push('/dashboard/client')
+        }
       } else {
-        router.replace('/dashboard/client')
+        setError(data.message || 'Erro ao fazer login')
       }
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Erro de conexão. Tente novamente.')
+      setError('Erro de conexão. Tente novamente.')
     } finally {
       setIsLoading(false)
     }

@@ -1,13 +1,14 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  poweredByHeader: false,
-  reactStrictMode: true,
   eslint: {
     ignoreDuringBuilds: true,
   },
   images: {
     domains: ['localhost', 'i.imgur.com'],
     unoptimized: process.env.NODE_ENV === 'production',
+  },
+  env: {
+    CUSTOM_KEY: 'default_value',
   },
   // Enable standalone output for Docker
   output: 'standalone',
@@ -51,15 +52,7 @@ const nextConfig = {
           },
           {
             key: 'Referrer-Policy',
-            value: 'strict-origin-when-cross-origin',
-          },
-          {
-            key: 'Permissions-Policy',
-            value: 'camera=(), microphone=(), geolocation=()',
-          },
-          {
-            key: 'Cross-Origin-Opener-Policy',
-            value: 'same-origin',
+            value: 'origin-when-cross-origin',
           },
         ],
       },

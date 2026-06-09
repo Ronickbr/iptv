@@ -2,24 +2,33 @@
 
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { apiFetchJson, clearLegacyToken } from '../../lib/api'
 
 export default function DashboardRedirect() {
   const router = useRouter()
 
   useEffect(() => {
-    const redirectToDashboard = async () => {
-      try {
-        clearLegacyToken()
-        const data = await apiFetchJson<{ profile: { role: 'admin' | 'client' } }>('/user/profile')
-        router.replace(data.profile.role === 'admin' ? '/dashboard/admin' : '/dashboard/client')
-      } catch {
-        router.replace('/login')
-      }
+    const token = localStorage.getItem('token')
+    
+    if (!token) {
+      router.push('/login')
+      return
     }
 
-    void redirectToDashboard()
-  }, [router])
+    try {
+      // Decode token to get user role
+      const payload = JSON.parse(atob(token.split('.')[1]))
+      
+      if (payload.role === 'admin') {
+        router.push('/dashboard/admin')
+      } else {
+        router.push('/dashboard/client')
+      }
+    } catch (error) {
+      // Invalid token, redirect to login
+      localStorage.removeItem('token')
+      router.push('/login')
+    }
+  }, [])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">

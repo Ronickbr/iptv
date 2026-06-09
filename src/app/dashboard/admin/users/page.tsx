@@ -19,8 +19,6 @@ import {
 import { useRouter } from 'next/navigation'
 import Sidebar from '../../../components/Sidebar'
 import CustomSelect from '../../../components/CustomSelect'
-import { apiFetchJson } from '../../../../lib/api'
-import { useAuthenticatedUser } from '../../../hooks/useAuthenticatedUser'
 
 interface User {
   id: string
@@ -47,6 +45,7 @@ interface CurrentUser {
 
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([])
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
@@ -68,20 +67,52 @@ export default function UsersPage() {
     password: ''
   })
   const router = useRouter()
-  const { user: currentUser, loading: authLoading, logout } = useAuthenticatedUser('admin')
 
   useEffect(() => {
-    if (authLoading || !currentUser) {
+    const token = localStorage.getItem('token')
+    if (!token) {
+      router.push('/login')
       return
     }
 
-    void fetchUsers()
-  }, [authLoading, currentUser])
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]))
+      if (payload.role !== 'admin') {
+        router.push('/dashboard/client')
+        return
+      }
+      setCurrentUser({
+        id: payload.userId,
+        name: payload.name || 'Admin',
+        email: payload.email,
+        role: payload.role
+      })
+    } catch (err) {
+      router.push('/login')
+      return
+    }
 
-  const fetchUsers = async () => {
+    fetchUsers(token)
+  }, [])
+
+
+
+  const fetchUsers = async (token: string) => {
     try {
       setError('')
-      const data = await apiFetchJson<{ users: User[] }>('/admin/users')
+      // Buscando dados reais da API
+      const response = await fetch('http://localhost:3001/api/admin/users', {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      })
+
+      if (!response.ok) {
+        throw new Error('Erro ao buscar usuários')
+      }
+
+      const data = await response.json()
       setUsers(data.users || [])
     } catch (err) {
       setError('Erro ao carregar usuários')
@@ -89,6 +120,11 @@ export default function UsersPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleLogout = () => {
+    localStorage.removeItem('token')
+    router.push('/login')
   }
 
   const closeModals = () => {
@@ -144,13 +180,22 @@ export default function UsersPage() {
   const createUser = async () => {
     try {
       setActionLoading(true)
-      const data = await apiFetchJson<{ user: User }>('/admin/users', {
+      const token = localStorage.getItem('token')
+      
+      const response = await fetch('http://localhost:3001/api/admin/users', {
         method: 'POST',
         headers: {
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify(createFormData)
       })
+
+      if (!response.ok) {
+        throw new Error('Erro ao criar usuário')
+      }
+
+      const data = await response.json()
       
       // Adicionar o novo usuário à lista
       setUsers(prev => [...prev, data.user])
@@ -167,13 +212,19 @@ export default function UsersPage() {
   const updateUserStatus = async (userId: string, newStatus: string) => {
     setActionLoading(true)
     try {
-      await apiFetchJson(`/admin/users/${userId}/status`, {
+      const token = localStorage.getItem('token')
+      const response = await fetch(`http://localhost:3001/api/admin/users/${userId}/status`, {
         method: 'PATCH',
         headers: {
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({ status: newStatus })
       })
+
+      if (!response.ok) {
+        throw new Error('Erro ao atualizar status')
+      }
 
       // Atualizar a lista de usuários
       setUsers(users.map(user => 
@@ -194,12 +245,18 @@ export default function UsersPage() {
     
     setActionLoading(true)
     try {
-      await apiFetchJson(`/admin/users/${selectedUser.id}`, {
+      const token = localStorage.getItem('token')
+      const response = await fetch(`http://localhost:3001/api/admin/users/${selectedUser.id}`, {
         method: 'DELETE',
         headers: {
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         }
       })
+
+      if (!response.ok) {
+        throw new Error('Erro ao excluir usuário')
+      }
 
       // Remover o usuário da lista
       setUsers(users.filter(user => user.id !== selectedUser.id))
@@ -264,7 +321,7 @@ export default function UsersPage() {
     return matchesSearch && matchesRole && matchesStatus
   })
 
-  if (loading || authLoading) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white"></div>
@@ -294,7 +351,7 @@ export default function UsersPage() {
       <Sidebar 
         userRole="admin" 
         userName={currentUser?.name || 'Admin'} 
-        onLogout={logout} 
+        onLogout={handleLogout} 
       />
 
       <main className="flex-1 lg:ml-0 p-4 lg:p-8 pt-16 lg:pt-8">

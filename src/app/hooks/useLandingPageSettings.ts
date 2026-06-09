@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react'
-import { apiFetch, apiFetchJson } from '../../lib/api'
 
 export interface LandingPageSettings {
   site: {
@@ -267,18 +266,25 @@ export function useLandingPageSettings() {
         }
 
         // Depois, tenta carregar da API (se disponível)
-        try {
-          const response = await apiFetch('/landing-page/settings')
+        const token = localStorage.getItem('token')
+        if (token) {
+          try {
+            const response = await fetch('http://localhost:3001/api/landing-page/settings', {
+              headers: {
+                'Authorization': `Bearer ${token}`
+              }
+            })
 
-          if (response.ok) {
-            const data = await response.json()
-            if (data.settings) {
-              setSettings(data.settings)
-              localStorage.setItem('landingPageSettings', JSON.stringify(data.settings))
+            if (response.ok) {
+              const data = await response.json()
+              if (data.settings) {
+                setSettings(data.settings)
+                localStorage.setItem('landingPageSettings', JSON.stringify(data.settings))
+              }
             }
+          } catch (apiError) {
+            console.log('API não disponível, usando configurações locais')
           }
-        } catch (apiError) {
-          console.log('API não disponível, usando configurações locais')
         }
       } catch (err) {
         console.error('Erro ao carregar configurações:', err)
@@ -301,16 +307,24 @@ export function useLandingPageSettings() {
       setSettings(newSettings)
 
       // Tenta salvar na API (se disponível)
-      try {
-        await apiFetchJson('/admin/landing-page', {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ settings: newSettings })
-        })
-      } catch (apiError) {
-        console.log('API não disponível, salvando apenas localmente')
+      const token = localStorage.getItem('token')
+      if (token) {
+        try {
+          const response = await fetch('http://localhost:3001/api/admin/landing-page', {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ settings: newSettings })
+          })
+
+          if (!response.ok) {
+            throw new Error('Erro ao salvar na API')
+          }
+        } catch (apiError) {
+          console.log('API não disponível, salvando apenas localmente')
+        }
       }
 
       return true
