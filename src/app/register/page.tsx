@@ -6,7 +6,8 @@ import { Eye, EyeOff, ArrowLeft, CheckCircle } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import Image from 'next/image'
-import { apiFetchJson } from '../../lib/api'
+import { apiFetchJson, isInstallRequiredError } from '../../lib/api'
+import { useInstallationStatus } from '../hooks/useInstallationStatus'
 
 export default function RegisterPage() {
   const [showPassword, setShowPassword] = useState(false)
@@ -31,6 +32,9 @@ export default function RegisterPage() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
   const router = useRouter()
+  const { loading: installationLoading } = useInstallationStatus({
+    redirectIfSetupRequired: true
+  })
 
   // Preencher automaticamente o código de indicação e dados do plano se houver parâmetros na URL
   useEffect(() => {
@@ -119,6 +123,11 @@ export default function RegisterPage() {
         }
       }, 2000)
     } catch (error) {
+      if (isInstallRequiredError(error)) {
+        router.replace('/install')
+        return
+      }
+
       setError(error instanceof Error ? error.message : 'Erro de conexao. Tente novamente.')
     } finally {
       setIsLoading(false)
@@ -131,6 +140,14 @@ export default function RegisterPage() {
       ...formData,
       [name]: type === 'checkbox' ? checked : value
     })
+  }
+
+  if (installationLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-500 via-purple-600 to-purple-800 flex items-center justify-center p-4">
+        <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-white"></div>
+      </div>
+    )
   }
 
   if (success) {

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { apiFetchJson, clearLegacyToken } from '../../lib/api'
+import { apiFetchJson, clearLegacyToken, isInstallRequiredError } from '../../lib/api'
 
 type UserRole = 'admin' | 'client'
 
@@ -57,9 +57,9 @@ export function useAuthenticatedUser(requiredRole?: UserRole) {
 
       setUser(nextUser)
       return nextUser
-    } catch {
+    } catch (error) {
       setUser(null)
-      router.replace('/login')
+      router.replace(isInstallRequiredError(error) ? '/install' : '/login')
       return null
     } finally {
       setLoading(false)

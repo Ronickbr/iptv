@@ -12,6 +12,10 @@ export class ApiError extends Error {
   }
 }
 
+interface ApiErrorWithCode {
+  code?: string
+}
+
 function normalizeApiPath(path: string) {
   if (path.startsWith('/api/')) {
     return path
@@ -60,4 +64,13 @@ export async function apiFetchJson<T>(path: string, init: RequestInit = {}) {
   }
 
   return data as T
+}
+
+export function isInstallRequiredError(error: unknown) {
+  if (!(error instanceof ApiError)) {
+    return false
+  }
+
+  const data = error.data as ApiErrorWithCode | null
+  return error.status === 503 && data?.code === 'INSTALL_REQUIRED'
 }

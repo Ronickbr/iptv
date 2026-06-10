@@ -27,13 +27,17 @@ import {
 import Link from 'next/link'
 import Image from 'next/image'
 import { useLandingPageSettings } from './hooks/useLandingPageSettings'
+import { useInstallationStatus } from './hooks/useInstallationStatus'
 
 export default function LandingPage() {
   const [isMenuOpen, setIsMenuOpen] = useState(false)
   const [isVideoModalOpen, setIsVideoModalOpen] = useState(false)
   const { settings, loading } = useLandingPageSettings()
+  const { loading: installationLoading } = useInstallationStatus({
+    redirectIfSetupRequired: true
+  })
 
-  if (loading) {
+  if (loading || installationLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white"></div>

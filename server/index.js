@@ -4,6 +4,8 @@ const mysql = require('mysql2/promise')
 const bcrypt = require('bcryptjs')
 const jwt = require('jsonwebtoken')
 const crypto = require('crypto')
+const fs = require('fs')
+const path = require('path')
 require('dotenv').config()
 
 const app = express()
@@ -22,7 +24,11 @@ const SESSION_COOKIE_SECURE = process.env.SESSION_COOKIE_SECURE === 'true'
   || (IS_PRODUCTION && process.env.SESSION_COOKIE_SECURE !== 'false')
 const AUTH_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000
 const AUTH_RATE_LIMIT_MAX_ATTEMPTS = 8
+const INSTALLATION_CACHE_TTL_MS = 5000
+const SCHEMA_FILE_PATH = path.join(__dirname, '..', 'database', 'schema.sql')
+const INSTALLER_CONFIG_PATH = process.env.INSTALLER_CONFIG_PATH || path.join(__dirname, '..', 'data', 'installer-config.json')
 const authAttempts = new Map()
+let installationStatusCache = null
 
 const allowedOrigins = new Set(
   [DEFAULT_CORS_ORIGIN, DEFAULT_APP_URL]
@@ -118,6 +124,309 @@ function parsePositiveInt(value, defaultValue, { min = 1, max = 100 } = {}) {
   }
 
   return Math.min(max, Math.max(min, parsed))
+}
+
+function hasRequiredDbConfig(config) {
+  return Boolean(config && config.host && config.user && config.database)
+}
+
+function sanitizeDbConfig(config = {}) {
+  return {
+    host: String(config.host || '').trim(),
+    port: parsePositiveInt(config.port || 3306, 3306, { min: 1, max: 65535 }),
+    user: String(config.user || '').trim(),
+    password: String(config.password || ''),
+    database: String(config.database || '').trim(),
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
+  }
+}
+
+function getEnvironmentDbConfig() {
+  return sanitizeDbConfig({
+    host: process.env.DB_HOST || 'localhost',
+    port: process.env.DB_PORT || 3306,
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'iptv_manager'
+  })
+}
+
+function ensureInstallerConfigDirectory() {
+  fs.mkdirSync(path.dirname(INSTALLER_CONFIG_PATH), { recursive: true })
+}
+
+function loadPersistedDbConfig() {
+  try {
+    if (!fs.existsSync(INSTALLER_CONFIG_PATH)) {
+      return null
+    }
+
+    const rawConfig = fs.readFileSync(INSTALLER_CONFIG_PATH, 'utf8')
+    return sanitizeDbConfig(JSON.parse(rawConfig))
+  } catch (error) {
+    console.error('Falha ao carregar configuracao persistida do instalador:', error)
+    return null
+  }
+}
+
+function savePersistedDbConfig(config) {
+  ensureInstallerConfigDirectory()
+  fs.writeFileSync(INSTALLER_CONFIG_PATH, JSON.stringify(sanitizeDbConfig(config), null, 2), 'utf8')
+}
+
+function getVisibleDbConfig(config) {
+  const activeConfig = sanitizeDbConfig(config)
+  const hasSavedConfig = fs.existsSync(INSTALLER_CONFIG_PATH)
+  return {
+    host: activeConfig.host || '',
+    port: activeConfig.port || 3306,
+    user: activeConfig.user || '',
+    database: activeConfig.database || '',
+    hasSavedConfig,
+    hasPasswordConfigured: Boolean(activeConfig.password),
+    source: hasSavedConfig ? 'installer' : 'environment'
+  }
+}
+
+function shouldReuseConfiguredPassword(targetConfig) {
+  const normalizedTarget = sanitizeDbConfig(targetConfig)
+  const normalizedActive = sanitizeDbConfig(activeDbConfig)
+
+  return !normalizedTarget.password
+    && normalizedTarget.host === normalizedActive.host
+    && normalizedTarget.port === normalizedActive.port
+    && normalizedTarget.user === normalizedActive.user
+    && normalizedTarget.database === normalizedActive.database
+    && Boolean(normalizedActive.password)
+}
+
+function clearInstallationStatusCache() {
+  installationStatusCache = null
+}
+
+function createDatabasePool(config) {
+  return mysql.createPool(sanitizeDbConfig(config))
+}
+
+async function parseAndExecuteSql(connection, sql) {
+  const statements = sql
+    .replace(/\r\n/g, '\n')
+    .split(/;\s*\n/)
+    .map(statement => statement.trim())
+    .filter(Boolean)
+
+  for (const statement of statements) {
+    await connection.query(statement)
+  }
+}
+
+function buildMigratableSchema() {
+  return fs
+    .readFileSync(SCHEMA_FILE_PATH, 'utf8')
+    .replace(/^DROP TABLE IF EXISTS .*$/gm, '')
+    .replace(/^CREATE TABLE /gm, 'CREATE TABLE IF NOT EXISTS ')
+    .replace(/^CREATE VIEW `active_subscriptions` AS$/gm, 'CREATE OR REPLACE VIEW `active_subscriptions` AS')
+}
+
+async function ensureDefaultPlans(connection) {
+  const [existingPlans] = await connection.query('SELECT COUNT(*) AS count FROM subscription_plans')
+  if (existingPlans[0].count > 0) {
+    return
+  }
+
+  const now = new Date()
+  const plans = [
+    {
+      id: crypto.randomUUID(),
+      name: 'Plano Básico',
+      description: 'Acesso a canais básicos com qualidade HD',
+      price: 29.9,
+      durationDays: 30,
+      maxDevices: 1,
+      features: JSON.stringify(['HD Quality', '100+ Canais', 'Suporte 24h']),
+      isPopular: false,
+      sortOrder: 1
+    },
+    {
+      id: crypto.randomUUID(),
+      name: 'Plano Premium',
+      description: 'Acesso completo com canais premium e múltiplos dispositivos',
+      price: 49.9,
+      durationDays: 30,
+      maxDevices: 3,
+      features: JSON.stringify(['Full HD Quality', '300+ Canais', 'Canais Premium', '3 Dispositivos', 'Suporte Prioritário']),
+      isPopular: true,
+      sortOrder: 2
+    },
+    {
+      id: crypto.randomUUID(),
+      name: 'Plano Família',
+      description: 'Plano completo para toda a família com máxima qualidade',
+      price: 79.9,
+      durationDays: 30,
+      maxDevices: 5,
+      features: JSON.stringify(['4K Quality', '500+ Canais', 'Canais Premium', 'Canais Infantis', '5 Dispositivos']),
+      isPopular: false,
+      sortOrder: 3
+    }
+  ]
+
+  for (const plan of plans) {
+    await connection.execute(
+      `INSERT INTO subscription_plans
+        (id, name, description, price, duration_days, max_devices, features, is_popular, is_active, sort_order, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE, ?, ?)`,
+      [plan.id, plan.name, plan.description, plan.price, plan.durationDays, plan.maxDevices, plan.features, plan.isPopular, plan.sortOrder, now]
+    )
+  }
+}
+
+async function ensureDefaultSystemSettings(connection) {
+  const defaults = [
+    ['app_name', 'IPTV Manager', 'string', 'Nome da aplicação', true],
+    ['app_version', '1.0.0', 'string', 'Versão da aplicação', true],
+    ['max_devices_per_plan', '5', 'number', 'Máximo de dispositivos por plano', false],
+    ['referral_points', '50', 'number', 'Pontos ganhos por indicação', false],
+    ['maintenance_mode', 'false', 'boolean', 'Modo de manutenção ativo', false]
+  ]
+
+  for (const [key, value, type, description, isPublic] of defaults) {
+    await connection.execute(
+      `INSERT INTO system_settings (id, \`key\`, value, type, description, is_public, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, NOW())
+       ON DUPLICATE KEY UPDATE value = VALUES(value), type = VALUES(type), description = VALUES(description), is_public = VALUES(is_public)`,
+      [crypto.randomUUID(), key, value, type, description, isPublic]
+    )
+  }
+}
+
+async function ensureAdminUser(connection, admin) {
+  const normalizedEmail = normalizeEmail(admin.email)
+  const trimmedName = String(admin.name || '').trim()
+  const password = String(admin.password || '')
+
+  if (!trimmedName || !normalizedEmail || !password) {
+    throw new Error('Nome, email e senha do administrador são obrigatórios')
+  }
+
+  if (!isValidEmail(normalizedEmail)) {
+    throw new Error('Email do administrador inválido')
+  }
+
+  if (!isValidPassword(password)) {
+    throw new Error('A senha do administrador deve ter pelo menos 8 caracteres')
+  }
+
+  const [existingUsers] = await connection.execute(
+    'SELECT id FROM users WHERE email = ? LIMIT 1',
+    [normalizedEmail]
+  )
+
+  if (existingUsers.length > 0) {
+    throw new Error('Já existe um usuário com este email')
+  }
+
+  const userId = crypto.randomUUID()
+  const adminId = crypto.randomUUID()
+  const hashedPassword = await bcrypt.hash(password, 12)
+
+  await connection.execute(
+    'INSERT INTO users (id, name, email, password, role, status, email_verified) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [userId, trimmedName, normalizedEmail, hashedPassword, 'admin', 'active', true]
+  )
+
+  await connection.execute(
+    'INSERT INTO admins (id, user_id, permissions) VALUES (?, ?, ?)',
+    [adminId, userId, JSON.stringify({ full_access: true })]
+  )
+}
+
+async function getInstallationStatus(configOverride) {
+  const currentConfig = sanitizeDbConfig(configOverride || activeDbConfig)
+  const currentTime = Date.now()
+
+  if (!configOverride && installationStatusCache && currentTime - installationStatusCache.timestamp < INSTALLATION_CACHE_TTL_MS) {
+    return installationStatusCache.status
+  }
+
+  if (!hasRequiredDbConfig(currentConfig)) {
+    const status = {
+      installed: false,
+      needsSetup: true,
+      databaseReachable: false,
+      schemaReady: false,
+      adminReady: false,
+      error: 'Configuracao do banco ainda nao foi definida.',
+      config: getVisibleDbConfig(currentConfig)
+    }
+
+    if (!configOverride) {
+      installationStatusCache = { timestamp: currentTime, status }
+    }
+
+    return status
+  }
+
+  const inspectionPool = createDatabasePool(currentConfig)
+
+  try {
+    const [tables] = await inspectionPool.query(
+      `SELECT TABLE_NAME
+       FROM information_schema.TABLES
+       WHERE TABLE_SCHEMA = ?
+         AND TABLE_NAME IN ('users', 'admins', 'subscription_plans', 'system_settings')`,
+      [currentConfig.database]
+    )
+
+    const tableNames = new Set(tables.map((table) => table.TABLE_NAME))
+    const schemaReady = ['users', 'admins', 'subscription_plans', 'system_settings'].every((tableName) => tableNames.has(tableName))
+    let adminReady = false
+
+    if (tableNames.has('users') && tableNames.has('admins')) {
+      const [admins] = await inspectionPool.query(
+        `SELECT COUNT(*) AS count
+         FROM users u
+         INNER JOIN admins a ON a.user_id = u.id
+         WHERE u.role = 'admin'`
+      )
+      adminReady = admins[0].count > 0
+    }
+
+    const status = {
+      installed: schemaReady && adminReady,
+      needsSetup: !(schemaReady && adminReady),
+      databaseReachable: true,
+      schemaReady,
+      adminReady,
+      config: getVisibleDbConfig(currentConfig)
+    }
+
+    if (!configOverride) {
+      installationStatusCache = { timestamp: currentTime, status }
+    }
+
+    return status
+  } catch (error) {
+    const status = {
+      installed: false,
+      needsSetup: true,
+      databaseReachable: false,
+      schemaReady: false,
+      adminReady: false,
+      error: error.message,
+      config: getVisibleDbConfig(currentConfig)
+    }
+
+    if (!configOverride) {
+      installationStatusCache = { timestamp: currentTime, status }
+    }
+
+    return status
+  } finally {
+    await inspectionPool.end().catch(() => {})
+  }
 }
 
 function requireTrustedOrigin(req, res, next) {
@@ -220,21 +529,25 @@ app.use((req, res, next) => {
 app.use(requireTrustedOrigin)
 
 // Database connection
-const dbConfig = {
-  host: process.env.DB_HOST || 'localhost',
-  port: process.env.DB_PORT || 3306,
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'iptv_manager',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
+let activeDbConfig = loadPersistedDbConfig() || getEnvironmentDbConfig()
+let pool = createDatabasePool(activeDbConfig)
+
+async function replaceDatabasePool(config) {
+  const nextConfig = sanitizeDbConfig(config)
+  const nextPool = createDatabasePool(nextConfig)
+
+  if (pool) {
+    await pool.end().catch(() => {})
+  }
+
+  pool = nextPool
+  activeDbConfig = nextConfig
+  clearInstallationStatusCache()
+  return nextPool
 }
 
-const pool = mysql.createPool(dbConfig)
-
 // Test database connection with retry logic
-async function testConnection(retries = 5, delay = 5000) {
+async function testConnection(retries = 5, delay = 5000, { exitOnFailure = false } = {}) {
   for (let i = 0; i < retries; i++) {
     try {
       const connection = await pool.getConnection()
@@ -244,8 +557,11 @@ async function testConnection(retries = 5, delay = 5000) {
     } catch (error) {
       console.log(`❌ Database connection attempt ${i + 1}/${retries} failed: ${error.message}`)
       if (i === retries - 1) {
-        console.error('❌ All database connection attempts failed. Exiting...')
-        process.exit(1)
+        console.error('❌ Todas as tentativas de conexao com o banco falharam. O instalador continuara disponivel.')
+        if (exitOnFailure) {
+          process.exit(1)
+        }
+        return false
       }
       console.log(`⏳ Retrying in ${delay/1000} seconds...`)
       await new Promise(resolve => setTimeout(resolve, delay))
@@ -278,8 +594,118 @@ const authenticateToken = (req, res, next) => {
 // Routes
 
 // Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', message: 'IPTV Manager API is running' })
+app.get('/api/health', async (req, res) => {
+  const installation = await getInstallationStatus()
+  res.json({
+    status: 'OK',
+    message: 'IPTV Manager API is running',
+    installation
+  })
+})
+
+// Installer routes
+app.get('/api/install/status', async (req, res) => {
+  const installation = await getInstallationStatus()
+  res.json({ installation })
+})
+
+app.post('/api/install/run', async (req, res) => {
+  try {
+    const {
+      dbHost,
+      dbPort,
+      dbUser,
+      dbPassword,
+      dbName,
+      adminName,
+      adminEmail,
+      adminPassword
+    } = req.body
+
+    const installConfig = sanitizeDbConfig({
+      host: dbHost,
+      port: dbPort,
+      user: dbUser,
+      password: dbPassword,
+      database: dbName
+    })
+
+    if (shouldReuseConfiguredPassword(installConfig)) {
+      installConfig.password = activeDbConfig.password
+    }
+
+    if (!hasRequiredDbConfig(installConfig)) {
+      return res.status(400).json({ message: 'Host, porta, usuario e banco de dados sao obrigatorios.' })
+    }
+
+    const existingStatus = await getInstallationStatus(installConfig)
+    if (existingStatus.installed) {
+      return res.status(409).json({ message: 'Este banco ja esta instalado.' })
+    }
+
+    const bootstrapConnection = await mysql.createConnection({
+      host: installConfig.host,
+      port: installConfig.port,
+      user: installConfig.user,
+      password: installConfig.password
+    })
+
+    await bootstrapConnection.query(
+      'CREATE DATABASE IF NOT EXISTS ?? CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci',
+      [installConfig.database]
+    )
+    await bootstrapConnection.end()
+
+    const installPool = createDatabasePool(installConfig)
+    const installConnection = await installPool.getConnection()
+
+    try {
+      await parseAndExecuteSql(installConnection, buildMigratableSchema())
+      await ensureDefaultPlans(installConnection)
+      await ensureDefaultSystemSettings(installConnection)
+      await ensureAdminUser(installConnection, {
+        name: adminName,
+        email: adminEmail,
+        password: adminPassword
+      })
+    } finally {
+      installConnection.release()
+      await installPool.end().catch(() => {})
+    }
+
+    savePersistedDbConfig(installConfig)
+    await replaceDatabasePool(installConfig)
+    await testConnection(1, 0)
+
+    const installation = await getInstallationStatus(installConfig)
+
+    res.status(201).json({
+      message: 'Instalacao concluida com sucesso.',
+      installation
+    })
+  } catch (error) {
+    console.error('Install error:', error)
+    res.status(500).json({
+      message: error.message || 'Falha ao concluir a instalacao.'
+    })
+  }
+})
+
+app.use('/api', async (req, res, next) => {
+  if (req.path === '/health' || req.path.startsWith('/install')) {
+    return next()
+  }
+
+  const installation = await getInstallationStatus()
+  if (!installation.installed) {
+    return res.status(503).json({
+      message: 'Sistema ainda nao instalado. Conclua o instalador primeiro.',
+      code: 'INSTALL_REQUIRED',
+      installation
+    })
+  }
+
+  next()
 })
 
 // Auth routes

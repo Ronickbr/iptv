@@ -56,6 +56,14 @@ npm run dev
 6. Use o arquivo [`.env.dokploy.example`](file:///d:/Sites/KMKZIPTV-v2/.env.dokploy.example) como base e configure as variaveis no painel.
 7. Faça o deploy.
 
+### Primeiro acesso
+
+- Se o banco ainda nao estiver preparado, a aplicacao redireciona automaticamente para `/install`.
+- O instalador preenche automaticamente host, porta, usuario e banco a partir das variaveis `DB_*` do ambiente do Dokploy.
+- Se a senha do banco ja estiver configurada no ambiente, ela pode ser reutilizada sem precisar expor o valor na tela.
+- O instalador permite informar o banco, executar a migracao inicial e criar o primeiro usuario administrador.
+- A configuracao do banco informada no instalador fica salva em `data/installer-config.json`.
+
 ### Variaveis recomendadas
 
 ```env

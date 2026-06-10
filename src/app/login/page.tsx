@@ -6,7 +6,8 @@ import { Eye, EyeOff, ArrowLeft } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import Image from 'next/image'
-import { apiFetchJson, clearLegacyToken } from '../../lib/api'
+import { apiFetchJson, clearLegacyToken, isInstallRequiredError } from '../../lib/api'
+import { useInstallationStatus } from '../hooks/useInstallationStatus'
 
 export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false)
@@ -17,6 +18,9 @@ export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
   const router = useRouter()
+  const { loading: installationLoading } = useInstallationStatus({
+    redirectIfSetupRequired: true
+  })
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -44,6 +48,11 @@ export default function LoginPage() {
         router.push('/dashboard/client')
       }
     } catch (error) {
+      if (isInstallRequiredError(error)) {
+        router.replace('/install')
+        return
+      }
+
       setError(error instanceof Error ? error.message : 'Erro de conexao. Tente novamente.')
     } finally {
       setIsLoading(false)
@@ -56,17 +65,13 @@ export default function LoginPage() {
       [e.target.name]: e.target.value
     })
   }
-
-  const fillAdminCredentials = () => {
-    setFormData({
-      email: 'admin@iptv.com',
-      password: 'secret'
-    })
+  if (installationLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-500 via-purple-600 to-purple-800 flex items-center justify-center p-4">
+        <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-white"></div>
+      </div>
+    )
   }
-
-
-
-
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-500 via-purple-600 to-purple-800 flex items-center justify-center p-4">
@@ -172,25 +177,6 @@ export default function LoginPage() {
                 >
                   {isLoading ? 'Entrando...' : 'Entrar'}
                 </button>
-                
-                <div className="relative my-6">
-                  <div className="absolute inset-0 flex items-center">
-                    <div className="w-full border-t border-gray-300"></div>
-                  </div>
-                  <div className="relative flex justify-center text-sm">
-                    <span className="px-2 bg-white text-gray-500">Credencial de administrador</span>
-                  </div>
-                </div>
-                
-                <div className="space-y-2">
-                  <button
-                    type="button"
-                    onClick={fillAdminCredentials}
-                    className="w-full text-left px-4 py-3 border border-blue-200 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 transition-colors"
-                  >
-                    <strong>Admin:</strong> admin@iptv.com / secret
-                  </button>
-                </div>
               </form>
             </div>
           </div>
