@@ -3,14 +3,221 @@ const cors = require('cors')
 const mysql = require('mysql2/promise')
 const bcrypt = require('bcryptjs')
 const jwt = require('jsonwebtoken')
+const crypto = require('crypto')
 require('dotenv').config()
 
 const app = express()
 const PORT = process.env.API_PORT || 3001
+const HOST = process.env.API_HOST || '0.0.0.0'
+const NODE_ENV = process.env.NODE_ENV || 'development'
+const IS_PRODUCTION = NODE_ENV === 'production'
+const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || 'iptv_session'
+const DEFAULT_APP_URL = process.env.APP_URL || process.env.NEXTAUTH_URL || 'http://localhost:3000'
+const DEFAULT_CORS_ORIGIN = process.env.CORS_ORIGIN || DEFAULT_APP_URL
+const JWT_SECRET = process.env.JWT_SECRET
+const EFFECTIVE_JWT_SECRET = JWT_SECRET && JWT_SECRET.length >= 32
+  ? JWT_SECRET
+  : (IS_PRODUCTION ? null : 'development-only-change-this-secret')
+const SESSION_COOKIE_SECURE = process.env.SESSION_COOKIE_SECURE === 'true'
+  || (IS_PRODUCTION && process.env.SESSION_COOKIE_SECURE !== 'false')
+const AUTH_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000
+const AUTH_RATE_LIMIT_MAX_ATTEMPTS = 8
+const authAttempts = new Map()
+
+const allowedOrigins = new Set(
+  [DEFAULT_CORS_ORIGIN, DEFAULT_APP_URL]
+    .flatMap(value => String(value || '').split(','))
+    .map(value => value.trim())
+    .filter(Boolean)
+)
+
+function isAllowedOrigin(origin) {
+  return !origin || allowedOrigins.has(origin)
+}
+
+function parseCookies(cookieHeader = '') {
+  return cookieHeader
+    .split(';')
+    .map(part => part.trim())
+    .filter(Boolean)
+    .reduce((cookies, entry) => {
+      const separatorIndex = entry.indexOf('=')
+      if (separatorIndex === -1) {
+        return cookies
+      }
+
+      const key = entry.slice(0, separatorIndex).trim()
+      const value = entry.slice(separatorIndex + 1).trim()
+      cookies[key] = decodeURIComponent(value)
+      return cookies
+    }, {})
+}
+
+function parseDurationToSeconds(duration, fallbackSeconds = 7 * 24 * 60 * 60) {
+  if (!duration || typeof duration !== 'string') {
+    return fallbackSeconds
+  }
+
+  const match = duration.trim().match(/^(\d+)([smhd])$/i)
+  if (!match) {
+    return fallbackSeconds
+  }
+
+  const value = Number(match[1])
+  const unit = match[2].toLowerCase()
+  const multiplier = {
+    s: 1,
+    m: 60,
+    h: 60 * 60,
+    d: 24 * 60 * 60
+  }[unit]
+
+  return value * multiplier
+}
+
+function serializeAuthCookie(token, options = {}) {
+  const attributes = [
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax'
+  ]
+
+  if (typeof options.maxAge === 'number') {
+    attributes.push(`Max-Age=${options.maxAge}`)
+  }
+
+  if (SESSION_COOKIE_SECURE) {
+    attributes.push('Secure')
+  }
+
+  return attributes.join('; ')
+}
+
+function clearAuthCookie() {
+  return `${SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${SESSION_COOKIE_SECURE ? '; Secure' : ''}`
+}
+
+function normalizeEmail(email) {
+  return String(email || '').trim().toLowerCase()
+}
+
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+}
+
+function isValidPassword(password) {
+  return typeof password === 'string' && password.length >= 8
+}
+
+function parsePositiveInt(value, defaultValue, { min = 1, max = 100 } = {}) {
+  const parsed = Number.parseInt(String(value), 10)
+
+  if (Number.isNaN(parsed)) {
+    return defaultValue
+  }
+
+  return Math.min(max, Math.max(min, parsed))
+}
+
+function requireTrustedOrigin(req, res, next) {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+    return next()
+  }
+
+  const cookies = parseCookies(req.headers.cookie)
+  const hasSessionCookie = Boolean(cookies[SESSION_COOKIE_NAME])
+
+  if (!hasSessionCookie) {
+    return next()
+  }
+
+  const origin = req.headers.origin
+  if (origin && !isAllowedOrigin(origin)) {
+    return res.status(403).json({ message: 'Origem nao autorizada' })
+  }
+
+  if (!req.headers['x-requested-with']) {
+    return res.status(400).json({ message: 'Cabecalho de seguranca ausente' })
+  }
+
+  next()
+}
+
+function cleanupAuthAttempts() {
+  const cutoff = Date.now() - AUTH_RATE_LIMIT_WINDOW_MS
+  for (const [key, attempt] of authAttempts.entries()) {
+    if (attempt.lastAttemptAt < cutoff) {
+      authAttempts.delete(key)
+    }
+  }
+}
+
+function rateLimitAuth(req, res, next) {
+  cleanupAuthAttempts()
+
+  const email = normalizeEmail(req.body?.email)
+  const key = `${req.ip}:${email || 'anonymous'}`
+  const current = authAttempts.get(key)
+
+  if (current && current.count >= AUTH_RATE_LIMIT_MAX_ATTEMPTS && current.lastAttemptAt > Date.now() - AUTH_RATE_LIMIT_WINDOW_MS) {
+    return res.status(429).json({ message: 'Muitas tentativas. Tente novamente mais tarde.' })
+  }
+
+  req.authRateLimitKey = key
+  next()
+}
+
+function registerFailedAuthAttempt(key) {
+  if (!key) {
+    return
+  }
+
+  const current = authAttempts.get(key)
+  if (!current) {
+    authAttempts.set(key, { count: 1, lastAttemptAt: Date.now() })
+    return
+  }
+
+  current.count += 1
+  current.lastAttemptAt = Date.now()
+}
+
+function clearAuthAttempts(key) {
+  if (key) {
+    authAttempts.delete(key)
+  }
+}
+
+if (IS_PRODUCTION && !EFFECTIVE_JWT_SECRET) {
+  throw new Error('JWT_SECRET must be set with at least 32 characters in production')
+}
 
 // Middleware
-app.use(cors())
-app.use(express.json())
+app.disable('x-powered-by')
+app.use(cors({
+  origin(origin, callback) {
+    if (isAllowedOrigin(origin)) {
+      callback(null, true)
+      return
+    }
+
+    callback(new Error('Not allowed by CORS'))
+  },
+  credentials: true,
+  methods: ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+}))
+app.use(express.json({ limit: '100kb' }))
+app.use(express.urlencoded({ extended: true, limit: '20kb', parameterLimit: 50 }))
+app.use((req, res, next) => {
+  res.setHeader('X-Frame-Options', 'DENY')
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+  next()
+})
+app.use(requireTrustedOrigin)
 
 // Database connection
 const dbConfig = {
@@ -49,13 +256,17 @@ async function testConnection(retries = 5, delay = 5000) {
 // JWT middleware
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization']
-  const token = authHeader && authHeader.split(' ')[1]
+  const bearerToken = authHeader && authHeader.startsWith('Bearer ')
+    ? authHeader.split(' ')[1]
+    : null
+  const cookieToken = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
+  const token = cookieToken || bearerToken
 
   if (!token) {
     return res.status(401).json({ message: 'Token de acesso requerido' })
   }
 
-  jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret', (err, user) => {
+  jwt.verify(token, EFFECTIVE_JWT_SECRET, (err, user) => {
     if (err) {
       return res.status(403).json({ message: 'Token inválido' })
     }
@@ -72,19 +283,32 @@ app.get('/api/health', (req, res) => {
 })
 
 // Auth routes
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', rateLimitAuth, async (req, res) => {
   try {
     const { name, email, password, phone, referralCode } = req.body
+    const normalizedEmail = normalizeEmail(email)
+    const trimmedName = String(name || '').trim()
+    const normalizedReferralCode = String(referralCode || '').trim().toUpperCase()
+
+    res.setHeader('Cache-Control', 'no-store')
 
     // Validate required fields
-    if (!name || !email || !password) {
+    if (!trimmedName || !normalizedEmail || !password) {
       return res.status(400).json({ message: 'Nome, email e senha são obrigatórios' })
+    }
+
+    if (!isValidEmail(normalizedEmail)) {
+      return res.status(400).json({ message: 'Email inválido' })
+    }
+
+    if (!isValidPassword(password)) {
+      return res.status(400).json({ message: 'A senha deve ter pelo menos 8 caracteres' })
     }
 
     // Check if user already exists
     const [existingUsers] = await pool.execute(
       'SELECT id FROM users WHERE email = ?',
-      [email]
+      [normalizedEmail]
     )
 
     if (existingUsers.length > 0) {
@@ -96,15 +320,15 @@ app.post('/api/auth/register', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, saltRounds)
 
     // Generate user ID
-    const userId = require('crypto').randomUUID()
-    const clientId = require('crypto').randomUUID()
+    const userId = crypto.randomUUID()
+    const clientId = crypto.randomUUID()
 
     // Check if referral code exists and is valid
     let referrerId = null
-    if (referralCode) {
+    if (normalizedReferralCode) {
       const [referrer] = await pool.execute(
         'SELECT id, user_id FROM clients WHERE referral_code = ?',
-        [referralCode.toUpperCase()]
+        [normalizedReferralCode]
       )
       
       if (referrer.length > 0) {
@@ -120,11 +344,11 @@ app.post('/api/auth/register', async (req, res) => {
       // Insert user
       await connection.execute(
         'INSERT INTO users (id, name, email, password, role, status) VALUES (?, ?, ?, ?, ?, ?)',
-        [userId, name, email, hashedPassword, 'client', 'active']
+        [userId, trimmedName, normalizedEmail, hashedPassword, 'client', 'active']
       )
 
       // Generate referral code for new user
-      const newReferralCode = name.substring(0, 3).toUpperCase() + Math.random().toString(36).substring(2, 8).toUpperCase()
+      const newReferralCode = trimmedName.substring(0, 3).toUpperCase() + Math.random().toString(36).substring(2, 8).toUpperCase()
 
       // Insert client with referred_by if referral code was valid
       await connection.execute(
@@ -134,7 +358,7 @@ app.post('/api/auth/register', async (req, res) => {
 
       // If there's a valid referrer, create a referral record
       if (referrerId) {
-        const referralId = require('crypto').randomUUID()
+        const referralId = crypto.randomUUID()
         await connection.execute(
           'INSERT INTO referrals (id, referrer_id, referred_id, status, created_at) VALUES (?, ?, ?, ?, NOW())',
           [referralId, referrerId, clientId, 'pending']
@@ -152,7 +376,7 @@ app.post('/api/auth/register', async (req, res) => {
 
       res.status(201).json({ 
         message: 'Conta criada com sucesso',
-        user: { id: userId, name, email, role: 'client' }
+        user: { id: userId, name: trimmedName, email: normalizedEmail, role: 'client' }
       })
     } catch (error) {
       await connection.rollback()
@@ -165,22 +389,30 @@ app.post('/api/auth/register', async (req, res) => {
   }
 })
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', rateLimitAuth, async (req, res) => {
   try {
     const { email, password } = req.body
+    const normalizedEmail = normalizeEmail(email)
+
+    res.setHeader('Cache-Control', 'no-store')
 
     // Validate required fields
-    if (!email || !password) {
+    if (!normalizedEmail || !password) {
       return res.status(400).json({ message: 'Email e senha são obrigatórios' })
+    }
+
+    if (!isValidEmail(normalizedEmail)) {
+      return res.status(400).json({ message: 'Email inválido' })
     }
 
     // Find user
     const [users] = await pool.execute(
       'SELECT id, name, email, password, role, status FROM users WHERE email = ?',
-      [email]
+      [normalizedEmail]
     )
 
     if (users.length === 0) {
+      registerFailedAuthAttempt(req.authRateLimitKey)
       return res.status(401).json({ message: 'Credenciais inválidas' })
     }
 
@@ -194,6 +426,7 @@ app.post('/api/auth/login', async (req, res) => {
     // Verify password
     const isValidPassword = await bcrypt.compare(password, user.password)
     if (!isValidPassword) {
+      registerFailedAuthAttempt(req.authRateLimitKey)
       return res.status(401).json({ message: 'Credenciais inválidas' })
     }
 
@@ -211,9 +444,14 @@ app.post('/api/auth/login', async (req, res) => {
         email: user.email, 
         role: user.role 
       },
-      process.env.JWT_SECRET || 'fallback-secret',
+      EFFECTIVE_JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     )
+
+    clearAuthAttempts(req.authRateLimitKey)
+    res.setHeader('Set-Cookie', serializeAuthCookie(token, {
+      maxAge: parseDurationToSeconds(process.env.JWT_EXPIRES_IN)
+    }))
 
     res.json({
       message: 'Login realizado com sucesso',
@@ -231,9 +469,17 @@ app.post('/api/auth/login', async (req, res) => {
   }
 })
 
+app.post('/api/auth/logout', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store')
+  res.setHeader('Set-Cookie', clearAuthCookie())
+  res.json({ message: 'Logout realizado com sucesso' })
+})
+
 // Protected routes
 app.get('/api/user/profile', authenticateToken, async (req, res) => {
   try {
+    res.setHeader('Cache-Control', 'no-store')
+
     const [users] = await pool.execute(
       'SELECT id, name, email, role, status, created_at, last_login FROM users WHERE id = ?',
       [req.user.userId]
@@ -486,7 +732,7 @@ app.delete('/api/admin/users/:id', authenticateToken, requireAdmin, async (req, 
     const user = users[0]
 
     // Prevent admin from deleting themselves
-    if (req.user.id === id) {
+    if (req.user.userId === id) {
       return res.status(400).json({ message: 'Você não pode excluir sua própria conta' })
     }
 
@@ -615,29 +861,110 @@ app.get('/api/admin/subscriptions', authenticateToken, requireAdmin, async (req,
 // Create subscription (admin only)
 app.post('/api/admin/subscriptions', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { client_id, plan_id, duration_days, price_paid, payment_method, notes } = req.body
+    const {
+      client_id,
+      plan_id,
+      user_email,
+      plan_name,
+      duration_days,
+      price_paid,
+      payment_method,
+      notes,
+      start_date
+    } = req.body
 
-    if (!client_id || !plan_id) {
-      return res.status(400).json({ message: 'Client ID e Plan ID são obrigatórios' })
+    let resolvedClientId = client_id || null
+    let resolvedPlanId = plan_id || null
+    let resolvedPricePaid = typeof price_paid !== 'undefined' ? price_paid : null
+    let resolvedPlanName = plan_name || null
+
+    if (!resolvedClientId && user_email) {
+      const [clients] = await pool.execute(
+        `SELECT c.id
+         FROM clients c
+         JOIN users u ON c.user_id = u.id
+         WHERE u.email = ?
+         LIMIT 1`,
+        [normalizeEmail(user_email)]
+      )
+
+      if (clients.length === 0) {
+        return res.status(404).json({ message: 'Cliente nao encontrado para o email informado' })
+      }
+
+      resolvedClientId = clients[0].id
     }
 
-    const subscriptionId = require('crypto').randomUUID()
-    const startDate = new Date()
-    const endDate = new Date(startDate.getTime() + (duration_days || 30) * 24 * 60 * 60 * 1000)
+    if (!resolvedPlanId && resolvedPlanName) {
+      const [plans] = await pool.execute(
+        `SELECT id, name, price, duration_days
+         FROM subscription_plans
+         WHERE name = ?
+         LIMIT 1`,
+        [resolvedPlanName]
+      )
+
+      if (plans.length === 0) {
+        return res.status(404).json({ message: 'Plano nao encontrado' })
+      }
+
+      resolvedPlanId = plans[0].id
+      resolvedPricePaid = resolvedPricePaid ?? plans[0].price
+      resolvedPlanName = plans[0].name
+    }
+
+    if (!resolvedClientId || !resolvedPlanId) {
+      return res.status(400).json({ message: 'Client ID/plan ID ou user_email/plan_name sao obrigatorios' })
+    }
+
+    const subscriptionId = crypto.randomUUID()
+    const startDate = start_date ? new Date(start_date) : new Date()
+    const safeDurationDays = parsePositiveInt(duration_days, 30, { min: 1, max: 3660 })
+    const endDate = new Date(startDate.getTime() + safeDurationDays * 24 * 60 * 60 * 1000)
 
     await pool.execute(
       `INSERT INTO subscriptions (id, client_id, plan_id, status, start_date, end_date, price_paid, payment_method, notes)
        VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
-      [subscriptionId, client_id, plan_id, startDate, endDate, price_paid, payment_method, notes]
+      [subscriptionId, resolvedClientId, resolvedPlanId, startDate, endDate, resolvedPricePaid, payment_method, notes]
     )
 
     // Update client subscription status
     await pool.execute(
       'UPDATE clients SET subscription_status = "active" WHERE id = ?',
-      [client_id]
+      [resolvedClientId]
     )
 
-    res.status(201).json({ message: 'Assinatura criada com sucesso', id: subscriptionId })
+    const [createdSubscriptions] = await pool.execute(
+      `SELECT s.*, u.name as client_name, u.email as client_email,
+              sp.name as plan_name, sp.price as plan_price
+       FROM subscriptions s
+       JOIN clients c ON s.client_id = c.id
+       JOIN users u ON c.user_id = u.id
+       JOIN subscription_plans sp ON s.plan_id = sp.id
+       WHERE s.id = ?
+       LIMIT 1`,
+      [subscriptionId]
+    )
+
+    const createdSubscription = createdSubscriptions[0]
+
+    res.status(201).json({
+      message: 'Assinatura criada com sucesso',
+      subscription: {
+        id: createdSubscription.id,
+        user_name: createdSubscription.client_name,
+        user_email: createdSubscription.client_email,
+        plan_name: createdSubscription.plan_name,
+        price: parseFloat(createdSubscription.plan_price || createdSubscription.price_paid || 0),
+        status: createdSubscription.status,
+        start_date: createdSubscription.start_date,
+        end_date: createdSubscription.end_date,
+        payment_method: createdSubscription.payment_method || 'N/A',
+        auto_renewal: false,
+        devices_used: 0,
+        max_devices: 2
+      }
+    })
   } catch (error) {
     console.error('Create subscription error:', error)
     res.status(500).json({ message: 'Erro interno do servidor' })
@@ -672,7 +999,9 @@ app.patch('/api/admin/subscriptions/:id/status', authenticateToken, requireAdmin
 app.get('/api/admin/rewards', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { page = 1, limit = 10, type = '', active = '' } = req.query
-    const offset = (page - 1) * limit
+    const pageNumber = parsePositiveInt(page, 1, { min: 1, max: 10000 })
+    const limitNumber = parsePositiveInt(limit, 10, { min: 1, max: 100 })
+    const offset = (pageNumber - 1) * limitNumber
 
     let whereClause = 'WHERE 1=1'
     const params = []
@@ -687,11 +1016,8 @@ app.get('/api/admin/rewards', authenticateToken, requireAdmin, async (req, res) 
       params.push(active === 'true')
     }
 
-    const finalLimit = parseInt(limit);
-    const finalOffset = parseInt(offset);
-    
     const [rewards] = await pool.execute(
-      `SELECT * FROM rewards ${whereClause} ORDER BY created_at DESC LIMIT ${finalLimit} OFFSET ${finalOffset}`
+      `SELECT * FROM rewards ${whereClause} ORDER BY created_at DESC LIMIT ${limitNumber} OFFSET ${offset}`
     )
 
     const [totalCount] = await pool.execute(
@@ -727,10 +1053,10 @@ app.get('/api/admin/rewards', authenticateToken, requireAdmin, async (req, res) 
     res.json({
       rewards: mappedRewards,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: pageNumber,
+        limit: limitNumber,
         total: totalCount[0].total,
-        pages: Math.ceil(totalCount[0].total / limit)
+        pages: Math.ceil(totalCount[0].total / limitNumber)
       }
     })
   } catch (error) {
@@ -757,7 +1083,7 @@ app.post('/api/admin/rewards', authenticateToken, requireAdmin, async (req, res)
     }
     
     const dbCategory = categoryMap[category] || 'discount'
-    const rewardId = require('crypto').randomUUID()
+    const rewardId = crypto.randomUUID()
     const expiresAt = expires_at ? new Date(expires_at) : null
     const stockValue = stock && stock !== '' ? parseInt(stock) : null
     const rewardValue = value && value !== '' ? parseFloat(value) : null
@@ -861,7 +1187,9 @@ app.delete('/api/admin/rewards/:id', authenticateToken, requireAdmin, async (req
 app.get('/api/admin/rewards/redemptions', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { page = 1, limit = 10, status = '' } = req.query
-    const offset = (page - 1) * limit
+    const pageNumber = parsePositiveInt(page, 1, { min: 1, max: 10000 })
+    const limitNumber = parsePositiveInt(limit, 10, { min: 1, max: 100 })
+    const offset = (pageNumber - 1) * limitNumber
 
     let whereClause = 'WHERE 1=1'
     const params = []
@@ -871,9 +1199,6 @@ app.get('/api/admin/rewards/redemptions', authenticateToken, requireAdmin, async
       params.push(status)
     }
 
-    const finalLimit = parseInt(limit);
-    const finalOffset = parseInt(offset);
-    
     const [redemptions] = await pool.execute(
       `SELECT rr.*, u.name as client_name, u.email as client_email, r.name as reward_title
        FROM reward_redemptions rr
@@ -882,7 +1207,7 @@ app.get('/api/admin/rewards/redemptions', authenticateToken, requireAdmin, async
        JOIN rewards r ON rr.reward_id = r.id
        ${whereClause}
        ORDER BY rr.redeemed_at DESC
-       LIMIT ${finalLimit} OFFSET ${finalOffset}`
+       LIMIT ${limitNumber} OFFSET ${offset}`
     )
 
     const [totalCount] = await pool.execute(
@@ -895,10 +1220,10 @@ app.get('/api/admin/rewards/redemptions', authenticateToken, requireAdmin, async
     res.json({
       redemptions,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: pageNumber,
+        limit: limitNumber,
         total: totalCount[0].total,
-        pages: Math.ceil(totalCount[0].total / limit)
+        pages: Math.ceil(totalCount[0].total / limitNumber)
       }
     })
   } catch (error) {
@@ -911,7 +1236,9 @@ app.get('/api/admin/rewards/redemptions', authenticateToken, requireAdmin, async
 app.get('/api/admin/reward-redemptions', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { page = 1, limit = 10, status = '' } = req.query
-    const offset = (page - 1) * limit
+    const pageNumber = parsePositiveInt(page, 1, { min: 1, max: 10000 })
+    const limitNumber = parsePositiveInt(limit, 10, { min: 1, max: 100 })
+    const offset = (pageNumber - 1) * limitNumber
 
     let whereClause = 'WHERE 1=1'
     const params = []
@@ -921,9 +1248,6 @@ app.get('/api/admin/reward-redemptions', authenticateToken, requireAdmin, async 
       params.push(status)
     }
 
-    const finalLimit = parseInt(limit);
-    const finalOffset = parseInt(offset);
-    
     const [redemptions] = await pool.execute(
       `SELECT rr.*, u.name as client_name, u.email as client_email, r.name as reward_name
        FROM reward_redemptions rr
@@ -932,7 +1256,7 @@ app.get('/api/admin/reward-redemptions', authenticateToken, requireAdmin, async 
        JOIN rewards r ON rr.reward_id = r.id
        ${whereClause}
        ORDER BY rr.redeemed_at DESC
-       LIMIT ${finalLimit} OFFSET ${finalOffset}`
+       LIMIT ${limitNumber} OFFSET ${offset}`
     )
 
     const [totalCount] = await pool.execute(
@@ -945,10 +1269,10 @@ app.get('/api/admin/reward-redemptions', authenticateToken, requireAdmin, async 
     res.json({
       redemptions,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: pageNumber,
+        limit: limitNumber,
         total: totalCount[0].total,
-        pages: Math.ceil(totalCount[0].total / limit)
+        pages: Math.ceil(totalCount[0].total / limitNumber)
       }
     })
   } catch (error) {
@@ -985,7 +1309,9 @@ app.patch('/api/admin/reward-redemptions/:id/status', authenticateToken, require
 app.get('/api/admin/referrals', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { page = 1, limit = 10, status = '' } = req.query
-    const offset = (page - 1) * limit
+    const pageNumber = parsePositiveInt(page, 1, { min: 1, max: 10000 })
+    const limitNumber = parsePositiveInt(limit, 10, { min: 1, max: 100 })
+    const offset = (pageNumber - 1) * limitNumber
 
     let whereClause = 'WHERE 1=1'
     const params = []
@@ -995,9 +1321,6 @@ app.get('/api/admin/referrals', authenticateToken, requireAdmin, async (req, res
       params.push(status)
     }
 
-    const finalLimit = parseInt(limit);
-    const finalOffset = parseInt(offset);
-    
     const [referrals] = await pool.execute(
       `SELECT r.*, 
               u1.name as referrer_name, u1.email as referrer_email,
@@ -1009,7 +1332,7 @@ app.get('/api/admin/referrals', authenticateToken, requireAdmin, async (req, res
        JOIN users u2 ON c2.user_id = u2.id
        ${whereClause}
        ORDER BY r.created_at DESC
-       LIMIT ${finalLimit} OFFSET ${finalOffset}`
+       LIMIT ${limitNumber} OFFSET ${offset}`
     )
 
     const [totalCount] = await pool.execute(
@@ -1020,10 +1343,10 @@ app.get('/api/admin/referrals', authenticateToken, requireAdmin, async (req, res
     res.json({
       referrals,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: pageNumber,
+        limit: limitNumber,
         total: totalCount[0].total,
-        pages: Math.ceil(totalCount[0].total / limit)
+        pages: Math.ceil(totalCount[0].total / limitNumber)
       }
     })
   } catch (error) {
@@ -1104,7 +1427,7 @@ app.post('/api/admin/referrals/:id/approve', authenticateToken, requireAdmin, as
       }
 
       const referral = referrals[0]
-      const rewardPoints = 100 // Pontos padrão por indicação aprovada
+    const rewardPoints = 100 // Pontos padrao por indicacao aprovada
 
       // Update referral status to completed
       await connection.execute(
@@ -1269,7 +1592,7 @@ app.get('/api/admin/referrals/stats', authenticateToken, requireAdmin, async (re
 app.get('/api/admin/referrals/top-referrers', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { limit = 10 } = req.query
-    const limitValue = Math.max(1, Math.min(100, parseInt(limit))) // Sanitize limit
+    const limitValue = parsePositiveInt(limit, 10, { min: 1, max: 100 })
 
     const [topReferrers] = await pool.execute(
       `SELECT 
@@ -1306,7 +1629,7 @@ app.get('/api/admin/referrals/top-referrers', authenticateToken, requireAdmin, a
 app.get('/api/admin/reports', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { period = '30' } = req.query
-    const days = parseInt(period)
+    const days = parsePositiveInt(period, 30, { min: 1, max: 365 })
 
     // Revenue stats
     const [revenueStats] = await pool.execute(
@@ -1434,7 +1757,7 @@ app.get('/api/admin/reports', authenticateToken, requireAdmin, async (req, res) 
 app.get('/api/admin/expenses', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { period = '30', category, type } = req.query
-    const days = parseInt(period)
+    const days = parsePositiveInt(period, 30, { min: 1, max: 365 })
     
     let query = `
       SELECT 
@@ -1479,7 +1802,7 @@ app.post('/api/admin/expenses', authenticateToken, requireAdmin, async (req, res
       return res.status(400).json({ message: 'Tipo deve ser "fixed" ou "variable"' })
     }
     
-    const expenseId = require('crypto').randomUUID()
+    const expenseId = crypto.randomUUID()
     
     // Convert date to MySQL DATE format (YYYY-MM-DD)
     const formattedDate = new Date(date).toISOString().split('T')[0]
@@ -1832,7 +2155,7 @@ app.put('/api/admin/settings', authenticateToken, requireAdmin, async (req, res)
           `INSERT INTO system_settings (id, \`key\`, value, type) 
            VALUES (?, ?, ?, ?) 
            ON DUPLICATE KEY UPDATE value = ?, type = ?, updated_at = CURRENT_TIMESTAMP`,
-          [require('crypto').randomUUID(), key, stringValue, type, stringValue, type]
+          [crypto.randomUUID(), key, stringValue, type, stringValue, type]
         )
       }
 
@@ -1958,7 +2281,7 @@ app.post('/api/client/rewards/:id/redeem', authenticateToken, async (req, res) =
 
     try {
       // Create redemption
-      const redemptionId = require('crypto').randomUUID()
+      const redemptionId = crypto.randomUUID()
       await connection.execute(
         `INSERT INTO reward_redemptions (id, client_id, reward_id, points_used, status)
          VALUES (?, ?, ?, ?, 'pending')`,
@@ -2093,7 +2416,7 @@ app.get('/api/client/referrals', authenticateToken, async (req, res) => {
       completed_referrals: completedCount[0].count || 0,
       total_points_earned: pointsEarned[0].total || 0,
       points_this_month: pointsThisMonth[0].total || 0,
-      referral_link: `http://localhost:3000/register?ref=${referralCode}`
+      referral_link: `${DEFAULT_APP_URL.replace(/\/$/, '')}/register?ref=${encodeURIComponent(referralCode)}`
     }
 
     // Format referrals data
@@ -2199,7 +2522,7 @@ app.post('/api/client/referrals', authenticateToken, async (req, res) => {
 
     try {
       // Create referral
-      const referralId = require('crypto').randomUUID()
+      const referralId = crypto.randomUUID()
       await connection.execute(
         'INSERT INTO referrals (id, referrer_id, referred_id, status) VALUES (?, ?, ?, "pending")',
         [referralId, referrerId, referredId]
@@ -2383,7 +2706,9 @@ app.get('/api/client/subscriptions', authenticateToken, async (req, res) => {
 app.get('/api/client/notifications', authenticateToken, async (req, res) => {
   try {
     const { page = 1, limit = 10, unread_only = false } = req.query
-    const offset = (page - 1) * limit
+    const pageNumber = parsePositiveInt(page, 1, { min: 1, max: 10000 })
+    const limitNumber = parsePositiveInt(limit, 10, { min: 1, max: 100 })
+    const offset = (pageNumber - 1) * limitNumber
 
     let whereClause = 'WHERE user_id = ?'
     const params = [req.user.userId]
@@ -2394,7 +2719,7 @@ app.get('/api/client/notifications', authenticateToken, async (req, res) => {
 
     const [notifications] = await pool.execute(
       `SELECT * FROM notifications ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-      [...params, parseInt(limit), offset]
+      [...params, limitNumber, offset]
     )
 
     const [totalCount] = await pool.execute(
@@ -2410,10 +2735,10 @@ app.get('/api/client/notifications', authenticateToken, async (req, res) => {
     res.json({
       notifications,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: pageNumber,
+        limit: limitNumber,
         total: totalCount[0].total,
-        pages: Math.ceil(totalCount[0].total / limit)
+        pages: Math.ceil(totalCount[0].total / limitNumber)
       },
       unreadCount: unreadCount[0].count
     })
@@ -2480,7 +2805,7 @@ app.post('/api/admin/plans', authenticateToken, requireAdmin, async (req, res) =
       return res.status(400).json({ message: 'Nome, preço, duração e dispositivos máximos são obrigatórios' })
     }
 
-    const planId = require('crypto').randomUUID()
+    const planId = crypto.randomUUID()
 
     await pool.execute(
       `INSERT INTO subscription_plans (id, name, description, price, duration_days, max_devices, features, is_popular, is_active, sort_order)
@@ -2556,9 +2881,9 @@ app.use('*', (req, res) => {
 async function startServer() {
   await testConnection()
   
-  app.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`)
-    console.log(`📊 API Health: http://localhost:${PORT}/api/health`)
+  app.listen(PORT, HOST, () => {
+    console.log(`🚀 Server running on ${HOST}:${PORT}`)
+    console.log(`📊 API Health: http://127.0.0.1:${PORT}/api/health`)
   })
 }
 

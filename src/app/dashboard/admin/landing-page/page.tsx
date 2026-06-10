@@ -1,5 +1,6 @@
 'use client'
 
+import Image from 'next/image'
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { 
@@ -19,8 +20,8 @@ import {
   X,
   AlertTriangle
 } from 'lucide-react'
-import { useRouter } from 'next/navigation'
 import Sidebar from '../../../components/Sidebar'
+import { useAuthenticatedUser } from '../../../hooks/useAuthenticatedUser'
 
 interface LandingPageSettings {
   site: {
@@ -111,53 +112,22 @@ interface LandingPageSettings {
   }
 }
 
-interface CurrentUser {
-  id: string
-  name: string
-  email: string
-  role: string
-}
-
 export default function LandingPageManagement() {
   const [settings, setSettings] = useState<LandingPageSettings | null>(null)
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loadingSettings, setLoadingSettings] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [activeTab, setActiveTab] = useState<'site' | 'logo' | 'contact' | 'hero' | 'stats' | 'features' | 'plans' | 'footer'>('site')
-  const router = useRouter()
+  const { user, loading, logout } = useAuthenticatedUser('admin')
 
   useEffect(() => {
-    const token = localStorage.getItem('token')
-    if (!token) {
-      router.push('/login')
+    if (loading || !user) {
       return
     }
 
-    try {
-      const payload = JSON.parse(atob(token.split('.')[1]))
-      if (payload.role !== 'admin') {
-        router.push('/dashboard/client')
-        return
-      }
-      setCurrentUser({
-        id: payload.userId,
-        name: payload.name || 'Admin',
-        email: payload.email,
-        role: payload.role
-      })
-    } catch (err) {
-      router.push('/login')
-      return
-    }
-
-    fetchSettings(token)
-  }, [])
-
-  const fetchSettings = async (token: string) => {
-    try {
-      // Carregar configurações do localStorage ou API
+    const fetchSettings = async () => {
+      try {
       const savedSettings = localStorage.getItem('landingPageSettings')
       if (savedSettings) {
         const parsedSettings = JSON.parse(savedSettings)
@@ -167,10 +137,9 @@ export default function LandingPageManagement() {
             title: 'IPTV Manager',
             description: 'Sistema de Gerenciamento de IPTV'
           }
-        }
-        setSettings(parsedSettings)
-      } else {
-        // Configurações padrão
+          }
+          setSettings(parsedSettings)
+        } else {
         setSettings({
           site: {
             title: 'IPTV Manager',
@@ -330,20 +299,17 @@ export default function LandingPageManagement() {
               ]
             }
           }
-        })
+          })
+        }
+      } catch (err) {
+        setError('Erro ao carregar configurações')
+      } finally {
+        setLoadingSettings(false)
       }
-    } catch (err) {
-      setError('Erro ao carregar configurações')
-      console.error(err)
-    } finally {
-      setLoading(false)
     }
-  }
 
-  const handleLogout = () => {
-    localStorage.removeItem('token')
-    router.push('/login')
-  }
+    void fetchSettings()
+  }, [loading, user])
 
   const handleSave = async () => {
     if (!settings) return
@@ -353,30 +319,7 @@ export default function LandingPageManagement() {
     setSuccess('')
     
     try {
-      // Salvar no localStorage
       localStorage.setItem('landingPageSettings', JSON.stringify(settings))
-      
-      // Tentar salvar na API
-      const token = localStorage.getItem('token')
-      if (token) {
-        try {
-          const response = await fetch('http://localhost:3001/api/admin/landing-page', {
-            method: 'PUT',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`
-            },
-            body: JSON.stringify({ settings })
-          })
-          
-          if (!response.ok) {
-            console.warn('Erro ao salvar na API, mas salvo localmente')
-          }
-        } catch (apiError) {
-          console.warn('API não disponível, salvo apenas localmente')
-        }
-      }
-      
       setSuccess('Configurações salvas com sucesso!')
       setTimeout(() => setSuccess(''), 3000)
     } catch (err) {
@@ -427,7 +370,7 @@ export default function LandingPageManagement() {
     { id: 'footer', label: 'Footer', icon: Globe }
   ]
 
-  if (loading) {
+  if (loading || loadingSettings) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white"></div>
@@ -442,7 +385,7 @@ export default function LandingPageManagement() {
           <h2 className="text-2xl font-bold mb-4">Erro</h2>
           <p>{error}</p>
           <button 
-            onClick={() => router.push('/dashboard/admin')}
+            onClick={() => window.location.assign('/dashboard/admin')}
             className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
           >
             Voltar ao Dashboard
@@ -458,8 +401,8 @@ export default function LandingPageManagement() {
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex">
       <Sidebar 
         userRole="admin" 
-        userName={currentUser?.name || 'Admin'} 
-        onLogout={handleLogout} 
+        userName={user?.name || 'Admin'} 
+        onLogout={() => void logout()} 
       />
 
       <main className="flex-1 lg:ml-0 p-4 lg:p-8 pt-16 lg:pt-8">
@@ -636,11 +579,12 @@ export default function LandingPageManagement() {
               <div className="bg-white/5 border border-white/10 rounded-lg p-6">
                 <h4 className="text-white font-semibold mb-4">Preview</h4>
                 <div className="bg-white/10 rounded-lg p-4 inline-block">
-                  <img
+                  <Image
                     src={settings.logo.url}
                     alt={settings.logo.alt}
                     width={settings.logo.width}
                     height={settings.logo.height}
+                    unoptimized
                     className="rounded"
                     onError={(e) => {
                       e.currentTarget.style.display = 'none'

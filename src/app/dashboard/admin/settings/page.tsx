@@ -21,9 +21,10 @@ import {
   AlertTriangle,
   Check
 } from 'lucide-react'
-import { useRouter } from 'next/navigation'
 import Sidebar from '../../../components/Sidebar'
 import CustomSelect from '../../../components/CustomSelect'
+import { apiFetchJson } from '../../../../lib/api'
+import { useAuthenticatedUser } from '../../../hooks/useAuthenticatedUser'
 
 interface SystemSettings {
   subscription: {
@@ -77,77 +78,34 @@ interface SystemSettings {
   }
 }
 
-interface CurrentUser {
-  id: string
-  name: string
-  email: string
-  role: string
-}
-
 export default function SettingsPage() {
   const [settings, setSettings] = useState<SystemSettings | null>(null)
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loadingSettings, setLoadingSettings] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [activeTab, setActiveTab] = useState<'subscription' | 'payment' | 'notifications' | 'security' | 'plans' | 'downloads' | 'branding'>('subscription')
   const [showApiKey, setShowApiKey] = useState(false)
-  const router = useRouter()
+  const { user, loading, logout } = useAuthenticatedUser('admin')
 
   useEffect(() => {
-    const token = localStorage.getItem('token')
-    if (!token) {
-      router.push('/login')
+    if (loading || !user) {
       return
     }
 
-    try {
-      const payload = JSON.parse(atob(token.split('.')[1]))
-      if (payload.role !== 'admin') {
-        router.push('/dashboard/client')
-        return
+    const fetchSettings = async () => {
+      try {
+        const data = await apiFetchJson<{ settings: SystemSettings }>('/admin/settings')
+        setSettings(data.settings)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Erro ao carregar configuracoes')
+      } finally {
+        setLoadingSettings(false)
       }
-      setCurrentUser({
-        id: payload.userId,
-        name: payload.name || 'Admin',
-        email: payload.email,
-        role: payload.role
-      })
-    } catch (err) {
-      router.push('/login')
-      return
     }
 
-    fetchSettings(token)
-  }, [])
-
-  const fetchSettings = async (token: string) => {
-    try {
-      const response = await fetch('http://localhost:3001/api/admin/settings', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      })
-
-      if (!response.ok) {
-        throw new Error('Erro ao carregar configurações')
-      }
-
-      const data = await response.json()
-      setSettings(data.settings || {})
-    } catch (err) {
-      setError('Erro ao carregar configurações')
-      console.error(err)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleLogout = () => {
-    localStorage.removeItem('token')
-    router.push('/login')
-  }
+    void fetchSettings()
+  }, [loading, user])
 
   const handleSave = async () => {
     if (!settings) return
@@ -157,29 +115,18 @@ export default function SettingsPage() {
     setSuccess('')
     
     try {
-      const token = localStorage.getItem('token')
-      if (!token) {
-        router.push('/login')
-        return
-      }
-
-      const response = await fetch('http://localhost:3001/api/admin/settings', {
+      await apiFetchJson('/admin/settings', {
         method: 'PUT',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({ settings })
       })
 
-      if (!response.ok) {
-        throw new Error('Erro ao salvar configurações')
-      }
-
       setSuccess('Configurações salvas com sucesso!')
       setTimeout(() => setSuccess(''), 3000)
     } catch (err) {
-      setError('Erro ao salvar configurações')
+      setError(err instanceof Error ? err.message : 'Erro ao salvar configuracoes')
     } finally {
       setSaving(false)
     }
@@ -207,7 +154,7 @@ export default function SettingsPage() {
     { id: 'branding', label: 'Marca', icon: Settings }
   ]
 
-  if (loading) {
+  if (loading || loadingSettings) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white"></div>
@@ -222,7 +169,7 @@ export default function SettingsPage() {
           <h2 className="text-2xl font-bold mb-4">Erro</h2>
           <p>{error}</p>
           <button 
-            onClick={() => router.push('/dashboard/admin')}
+            onClick={() => window.location.assign('/dashboard/admin')}
             className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
           >
             Voltar ao Dashboard
@@ -238,8 +185,8 @@ export default function SettingsPage() {
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex">
       <Sidebar 
         userRole="admin" 
-        userName={currentUser?.name || 'Admin'} 
-        onLogout={handleLogout} 
+        userName={user?.name || 'Admin'} 
+        onLogout={() => void logout()} 
       />
 
       <main className="flex-1 lg:ml-0 p-4 lg:p-8 pt-16 lg:pt-8">

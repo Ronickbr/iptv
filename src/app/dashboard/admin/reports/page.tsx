@@ -20,9 +20,10 @@ import {
   Edit,
   Trash2
 } from 'lucide-react'
-import { useRouter } from 'next/navigation'
 import Sidebar from '../../../components/Sidebar'
 import CustomSelect from '../../../components/CustomSelect'
+import { apiFetchJson } from '../../../../lib/api'
+import { useAuthenticatedUser } from '../../../hooks/useAuthenticatedUser'
 
 interface ReportData {
   revenue: {
@@ -72,17 +73,9 @@ interface Expense {
   type: 'fixed' | 'variable'
 }
 
-interface CurrentUser {
-  id: string
-  name: string
-  email: string
-  role: string
-}
-
 export default function ReportsPage() {
   const [reportData, setReportData] = useState<ReportData | null>(null)
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loadingReports, setLoadingReports] = useState(true)
   const [error, setError] = useState('')
   const [selectedPeriod, setSelectedPeriod] = useState<'7d' | '30d' | '90d' | '1y'>('30d')
   const [selectedReport, setSelectedReport] = useState<'overview' | 'revenue' | 'subscriptions' | 'users' | 'expenses'>('overview')
@@ -96,66 +89,34 @@ export default function ReportsPage() {
     date: new Date().toISOString().split('T')[0],
     type: 'variable' as 'fixed' | 'variable'
   })
-  const router = useRouter()
+  const { user, loading, logout } = useAuthenticatedUser('admin')
 
   useEffect(() => {
-    const token = localStorage.getItem('token')
-    if (!token) {
-      router.push('/login')
+    if (loading || !user) {
       return
     }
 
-    try {
-      const payload = JSON.parse(atob(token.split('.')[1]))
-      if (payload.role !== 'admin') {
-        router.push('/dashboard/client')
-        return
+    const fetchReportData = async () => {
+      try {
+        const periodDays = {
+          '7d': '7',
+          '30d': '30',
+          '90d': '90',
+          '1y': '365'
+        }[selectedPeriod]
+
+        const data = await apiFetchJson<{ reportData: ReportData & { expenses?: Expense[] } }>(`/admin/reports?period=${periodDays}`)
+        setReportData(data.reportData)
+        setExpenses(data.reportData?.expenses || [])
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Erro ao carregar relatorios')
+      } finally {
+        setLoadingReports(false)
       }
-      setCurrentUser({
-        id: payload.userId,
-        name: payload.name || 'Admin',
-        email: payload.email,
-        role: payload.role
-      })
-    } catch (err) {
-      router.push('/login')
-      return
     }
 
-    fetchReportData(token)
-  }, [selectedPeriod])
-
-  const fetchReportData = async (token: string) => {
-    try {
-      const response = await fetch('http://localhost:3001/api/admin/reports', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      })
-
-      if (!response.ok) {
-        throw new Error('Erro ao carregar relatórios')
-      }
-
-      const data = await response.json()
-      setReportData(data.reportData || {})
-      
-      // Set expenses from the report data
-      if (data.reportData && data.reportData.expenses) {
-        setExpenses(data.reportData.expenses)
-      }
-    } catch (err) {
-      setError('Erro ao carregar relatórios')
-      console.error(err)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleLogout = () => {
-    localStorage.removeItem('token')
-    router.push('/login')
-  }
+    void fetchReportData()
+  }, [loading, selectedPeriod, user])
 
   const formatCurrency = (value: number) => {
     return value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
@@ -183,18 +144,16 @@ export default function ReportsPage() {
     }
 
     try {
-      const token = localStorage.getItem('token')
       const url = editingExpense 
-        ? `http://localhost:3001/api/admin/expenses/${editingExpense.id}`
-        : 'http://localhost:3001/api/admin/expenses'
+        ? `/admin/expenses/${editingExpense.id}`
+        : '/admin/expenses'
       
       const method = editingExpense ? 'PUT' : 'POST'
       
-      const response = await fetch(url, {
+      const data = await apiFetchJson<{ message?: string; expense: Expense }>(url, {
         method,
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           description: newExpense.description,
@@ -205,13 +164,6 @@ export default function ReportsPage() {
           notes: ''
         })
       })
-
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.message || 'Erro ao salvar despesa')
-      }
-
-      const data = await response.json()
       
       if (editingExpense) {
         setExpenses(expenses.map(exp => exp.id === editingExpense.id ? data.expense : exp))
@@ -231,7 +183,6 @@ export default function ReportsPage() {
       
       alert(data.message || 'Despesa salva com sucesso!')
     } catch (error) {
-      console.error('Erro ao salvar despesa:', error)
       alert(error instanceof Error ? error.message : 'Erro ao salvar despesa')
     }
   }
@@ -251,24 +202,12 @@ export default function ReportsPage() {
   const handleDeleteExpense = async (id: string) => {
     if (confirm('Tem certeza que deseja excluir esta despesa?')) {
       try {
-        const token = localStorage.getItem('token')
-        const response = await fetch(`http://localhost:3001/api/admin/expenses/${id}`, {
-          method: 'DELETE',
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
+        const data = await apiFetchJson<{ message?: string }>(`/admin/expenses/${id}`, {
+          method: 'DELETE'
         })
-
-        if (!response.ok) {
-          const errorData = await response.json()
-          throw new Error(errorData.message || 'Erro ao excluir despesa')
-        }
-
-        const data = await response.json()
         setExpenses(expenses.filter(exp => exp.id !== id))
         alert(data.message || 'Despesa excluída com sucesso!')
       } catch (error) {
-        console.error('Erro ao excluir despesa:', error)
         alert(error instanceof Error ? error.message : 'Erro ao excluir despesa')
       }
     }
@@ -290,7 +229,7 @@ export default function ReportsPage() {
     }))
   }
 
-  if (loading) {
+  if (loading || loadingReports) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white"></div>
@@ -305,7 +244,7 @@ export default function ReportsPage() {
           <h2 className="text-2xl font-bold mb-4">Erro</h2>
           <p>{error}</p>
           <button 
-            onClick={() => router.push('/dashboard/admin')}
+            onClick={() => window.location.assign('/dashboard/admin')}
             className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
           >
             Voltar ao Dashboard
@@ -321,8 +260,8 @@ export default function ReportsPage() {
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex">
       <Sidebar 
         userRole="admin" 
-        userName={currentUser?.name || 'Admin'} 
-        onLogout={handleLogout} 
+        userName={user?.name || 'Admin'} 
+        onLogout={() => void logout()} 
       />
 
       <main className="flex-1 lg:ml-0 p-4 lg:p-8 pt-16 lg:pt-8">
@@ -1068,7 +1007,7 @@ export default function ReportsPage() {
                 <div className="text-center text-white/60 py-8">
                   <Receipt className="w-16 h-16 mx-auto mb-4 opacity-50" />
                   <p>Nenhuma despesa registrada ainda</p>
-                  <p className="text-sm mt-2">Clique em "Nova Despesa" para começar</p>
+                  <p className="text-sm mt-2">Clique em &quot;Nova Despesa&quot; para comecar</p>
                 </div>
               ) : (
                 <div className="space-y-3">

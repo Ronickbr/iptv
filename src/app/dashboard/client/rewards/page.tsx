@@ -24,8 +24,9 @@ import {
   AlertTriangle,
   ExternalLink
 } from 'lucide-react'
-import { useRouter } from 'next/navigation'
 import Sidebar from '../../../components/Sidebar'
+import { apiFetchJson } from '../../../../lib/api'
+import { useAuthenticatedUser } from '../../../hooks/useAuthenticatedUser'
 
 interface Reward {
   id: string
@@ -52,13 +53,6 @@ interface RedeemedReward {
   expires_at?: string
 }
 
-interface CurrentUser {
-  id: string
-  name: string
-  email: string
-  role: string
-}
-
 interface UserPoints {
   current_points: number
   level: string
@@ -68,14 +62,13 @@ export default function RewardsPage() {
   const [rewards, setRewards] = useState<Reward[]>([])
   const [redeemedRewards, setRedeemedRewards] = useState<RedeemedReward[]>([])
   const [userPoints, setUserPoints] = useState<UserPoints | null>(null)
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loadingRewards, setLoadingRewards] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<'all' | 'discount' | 'product' | 'service' | 'premium'>('all')
   const [activeTab, setActiveTab] = useState<'available' | 'redeemed'>('available')
   const [showRedeemModal, setShowRedeemModal] = useState<Reward | null>(null)
-  const router = useRouter()
+  const { user, loading, logout } = useAuthenticatedUser('client')
 
   const categories = [
     { id: 'all', label: 'Todas', icon: Gift },
@@ -86,93 +79,44 @@ export default function RewardsPage() {
   ]
 
   useEffect(() => {
-    const token = localStorage.getItem('token')
-    const user = localStorage.getItem('user')
-    
-    if (!token || !user) {
-      router.push('/login')
+    if (loading || !user) {
       return
     }
-    
-    try {
-      setCurrentUser(JSON.parse(user))
-      fetchRewardsData(token)
-    } catch (error) {
-      console.error('Error parsing user data:', error)
-      router.push('/login')
-    }
-  }, [])
 
-  const fetchRewardsData = async (token: string) => {
-    try {
-      const [rewardsResponse, redeemedResponse, pointsResponse] = await Promise.all([
-        fetch('http://localhost:3001/api/client/rewards', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        }),
-        fetch('http://localhost:3001/api/client/rewards/redeemed', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        }),
-        fetch('http://localhost:3001/api/client/points', {
-          headers: { 'Authorization': `Bearer ${token}` }
+    const fetchRewardsData = async () => {
+      try {
+        const [rewardsData, redeemedData, pointsData] = await Promise.all([
+          apiFetchJson<{ rewards?: any[] }>('/client/rewards'),
+          apiFetchJson<{ redeemed_rewards?: RedeemedReward[] }>('/client/rewards/redeemed'),
+          apiFetchJson<{ pointsData?: UserPoints; user_points?: { current_points?: number; level?: { name?: string } } }>('/client/points')
+        ])
+
+        const processedRewards = (rewardsData.rewards || []).map((reward: any) => ({
+          ...reward,
+          title: reward.name || reward.title,
+          points_cost: reward.points_required || reward.points_cost,
+          category: reward.category || 'product',
+          availability: 'available',
+          terms: Array.isArray(reward.terms) ? reward.terms : (reward.terms ? String(reward.terms).split(',') : []),
+          icon: getRewardIcon(reward.category || 'product'),
+          color: getRewardColor(reward.category || 'product')
+        }))
+
+        setRewards(processedRewards)
+        setRedeemedRewards(redeemedData.redeemed_rewards || [])
+        setUserPoints({
+          current_points: pointsData.pointsData?.current_points || pointsData.user_points?.current_points || 0,
+          level: pointsData.pointsData?.level || pointsData.user_points?.level?.name || 'Inicial'
         })
-      ])
-
-      // Check for authentication errors
-      if (rewardsResponse.status === 401 || rewardsResponse.status === 403) {
-        localStorage.removeItem('token')
-        localStorage.removeItem('user')
-        router.push('/login')
-        return
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Erro ao carregar dados. Tente novamente.')
+      } finally {
+        setLoadingRewards(false)
       }
-
-      // Check individual responses and handle gracefully
-      let rewardsData = { rewards: [] }
-      let redeemedData = { redeemed_rewards: [] }
-      let pointsData = { user_points: { current_points: 0, level: { name: 'Inicial' } } }
-
-      if (rewardsResponse.ok) {
-        rewardsData = await rewardsResponse.json()
-      } else {
-        console.warn('Failed to fetch rewards:', rewardsResponse.status)
-      }
-      
-      if (redeemedResponse.ok) {
-        redeemedData = await redeemedResponse.json()
-      } else {
-        console.warn('Failed to fetch redeemed rewards:', redeemedResponse.status)
-      }
-      
-      if (pointsResponse.ok) {
-        pointsData = await pointsResponse.json()
-      } else {
-        console.warn('Failed to fetch points:', pointsResponse.status)
-      }
-
-      const processedRewards = (rewardsData.rewards || []).map((reward: any) => ({
-        ...reward,
-        title: reward.name || reward.title,
-        points_cost: reward.points_required || reward.points_cost,
-        category: reward.category || 'product',
-        availability: 'available',
-        terms: reward.terms ? reward.terms.split(',') : [],
-        icon: getRewardIcon(reward.category || 'product'),
-        color: getRewardColor(reward.category || 'product')
-      }))
-
-      setRewards(processedRewards)
-      setRedeemedRewards(redeemedData.redeemed_rewards || [])
-      setUserPoints({
-        current_points: pointsData.user_points?.current_points || 0,
-        level: pointsData.user_points?.level?.name || 'Inicial'
-      })
-    } catch (err: any) {
-      console.error('Error fetching rewards data:', err)
-      // Don't redirect on network errors, just show error message
-      setError('Erro ao carregar dados. Tente novamente.')
-    } finally {
-      setLoading(false)
     }
-  }
+
+    void fetchRewardsData()
+  }, [loading, user])
 
   const getRewardIcon = (category: string) => {
     switch (category) {
@@ -194,12 +138,6 @@ export default function RewardsPage() {
     }
   }
 
-  const handleLogout = () => {
-    localStorage.removeItem('token')
-    localStorage.removeItem('user')
-    router.push('/login')
-  }
-
   const filteredRewards = rewards.filter(reward => 
     selectedCategory === 'all' || reward.category === selectedCategory
   )
@@ -211,29 +149,37 @@ export default function RewardsPage() {
     }
     
     try {
-      const token = localStorage.getItem('token')
-      const response = await fetch(`http://localhost:3001/api/client/rewards/${reward.id}/redeem`, {
+      await apiFetchJson(`/client/rewards/${reward.id}/redeem`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           reward_id: reward.id
         })
       })
-
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.message || 'Erro ao resgatar recompensa')
-      }
-
-      const data = await response.json()
       
-      // Refresh data
-      if (token) {
-        await fetchRewardsData(token)
-      }
+      const [rewardsData, redeemedData, pointsData] = await Promise.all([
+        apiFetchJson<{ rewards?: any[] }>('/client/rewards'),
+        apiFetchJson<{ redeemed_rewards?: RedeemedReward[] }>('/client/rewards/redeemed'),
+        apiFetchJson<{ pointsData?: UserPoints; user_points?: { current_points?: number; level?: { name?: string } } }>('/client/points')
+      ])
+
+      setRewards((rewardsData.rewards || []).map((nextReward: any) => ({
+        ...nextReward,
+        title: nextReward.name || nextReward.title,
+        points_cost: nextReward.points_required || nextReward.points_cost,
+        category: nextReward.category || 'product',
+        availability: 'available',
+        terms: Array.isArray(nextReward.terms) ? nextReward.terms : (nextReward.terms ? String(nextReward.terms).split(',') : []),
+        icon: getRewardIcon(nextReward.category || 'product'),
+        color: getRewardColor(nextReward.category || 'product')
+      })))
+      setRedeemedRewards(redeemedData.redeemed_rewards || [])
+      setUserPoints({
+        current_points: pointsData.pointsData?.current_points || pointsData.user_points?.current_points || 0,
+        level: pointsData.pointsData?.level || pointsData.user_points?.level?.name || 'Inicial'
+      })
       
       setShowRedeemModal(null)
       setSuccess(`Recompensa "${reward.title}" resgatada com sucesso!`)
@@ -284,7 +230,7 @@ export default function RewardsPage() {
     }
   }
 
-  if (loading) {
+  if (loading || loadingRewards) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white"></div>
@@ -298,8 +244,8 @@ export default function RewardsPage() {
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex">
       <Sidebar 
         userRole="client" 
-        userName={currentUser?.name || 'Cliente'} 
-        onLogout={handleLogout} 
+        userName={user?.name || 'Cliente'} 
+        onLogout={() => void logout()} 
       />
 
       <main className="flex-1 lg:ml-0 p-4 lg:p-8 pt-16 lg:pt-8">

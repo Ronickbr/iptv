@@ -1,30 +1,22 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
+  poweredByHeader: false,
+  reactStrictMode: true,
   images: {
     domains: ['localhost', 'i.imgur.com'],
     unoptimized: process.env.NODE_ENV === 'production',
   },
-  env: {
-    CUSTOM_KEY: 'default_value',
-  },
-  // Enable standalone output for Docker
   output: 'standalone',
-  
-  // Compress responses
   compress: true,
-  
-  // Enable experimental features for better performance
   experimental: {
     serverComponentsExternalPackages: ['mysql2'],
   },
   
   async rewrites() {
-    const apiUrl = process.env.NODE_ENV === 'production' 
-      ? process.env.API_URL || 'http://localhost:3001'
-      : 'http://localhost:3001';
+    const defaultApiUrl = process.env.NODE_ENV === 'production'
+      ? `http://127.0.0.1:${process.env.API_PORT || '3001'}`
+      : 'http://localhost:3001'
+    const apiUrl = process.env.API_URL || defaultApiUrl
       
     return [
       {
@@ -34,10 +26,7 @@ const nextConfig = {
     ]
   },
   
-  // Security headers for production
   async headers() {
-    if (process.env.NODE_ENV !== 'production') return [];
-    
     return [
       {
         source: '/(.*)',
@@ -52,7 +41,19 @@ const nextConfig = {
           },
           {
             key: 'Referrer-Policy',
-            value: 'origin-when-cross-origin',
+            value: 'strict-origin-when-cross-origin',
+          },
+          {
+            key: 'Permissions-Policy',
+            value: 'camera=(), microphone=(), geolocation=()',
+          },
+          {
+            key: 'Cross-Origin-Opener-Policy',
+            value: 'same-origin',
+          },
+          {
+            key: 'Cross-Origin-Resource-Policy',
+            value: 'same-origin',
           },
         ],
       },

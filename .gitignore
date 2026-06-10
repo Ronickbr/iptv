@@ -14,4 +14,3 @@ coverage/
 .env.*.local
 
 !.env.example
-!.env.production

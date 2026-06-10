@@ -6,6 +6,7 @@ import { Eye, EyeOff, ArrowLeft, CheckCircle } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import Image from 'next/image'
+import { apiFetchJson } from '../../lib/api'
 
 export default function RegisterPage() {
   const [showPassword, setShowPassword] = useState(false)
@@ -81,7 +82,12 @@ export default function RegisterPage() {
     }
 
     try {
-      const response = await fetch('http://localhost:3001/api/auth/register', {
+      const data = await apiFetchJson<{
+        user?: {
+          id?: string
+        }
+        userId?: string
+      }>('/auth/register', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -95,32 +101,25 @@ export default function RegisterPage() {
         }),
       })
 
-      const data = await response.json()
-
-      if (response.ok) {
-        setSuccess(true)
-        setTimeout(() => {
-          // Se há um plano selecionado, redireciona para pagamento, senão para login
-          if (selectedPlan.name) {
-            const paymentParams = new URLSearchParams({
-              planName: selectedPlan.name,
-              planPrice: selectedPlan.price,
-              planPeriod: selectedPlan.period,
-              ...(selectedPlan.originalPrice && { planOriginalPrice: selectedPlan.originalPrice }),
-              ...(selectedPlan.discount && { planDiscount: selectedPlan.discount }),
-              userId: data.userId || '',
-              userEmail: formData.email
-            })
-            router.push(`/payment?${paymentParams.toString()}`)
-          } else {
-            router.push('/login')
-          }
-        }, 2000)
-      } else {
-        setError(data.message || 'Erro ao criar conta')
-      }
+      setSuccess(true)
+      setTimeout(() => {
+        if (selectedPlan.name) {
+          const paymentParams = new URLSearchParams({
+            planName: selectedPlan.name,
+            planPrice: selectedPlan.price,
+            planPeriod: selectedPlan.period,
+            ...(selectedPlan.originalPrice && { planOriginalPrice: selectedPlan.originalPrice }),
+            ...(selectedPlan.discount && { planDiscount: selectedPlan.discount }),
+            userId: data.user?.id || data.userId || '',
+            userEmail: formData.email
+          })
+          router.push(`/payment?${paymentParams.toString()}`)
+        } else {
+          router.push('/login')
+        }
+      }, 2000)
     } catch (error) {
-      setError('Erro de conexão. Tente novamente.')
+      setError(error instanceof Error ? error.message : 'Erro de conexao. Tente novamente.')
     } finally {
       setIsLoading(false)
     }

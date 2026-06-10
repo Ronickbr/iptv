@@ -2,13 +2,17 @@
   "name": "iptv-manager",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
     "dev": "concurrently \"next dev\" \"node server/index.js\"",
     "dev:next": "next dev",
     "dev:api": "node server/index.js",
     "dev:api:wait": "node scripts/wait-for-db.js && node server/index.js",
     "build": "next build",
-    "start": "next start",
+    "start": "node server/start-production.js",
+    "start:api": "node server/index.js",
     "lint": "next lint"
   },
   "dependencies": {
