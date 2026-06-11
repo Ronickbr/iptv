@@ -5,7 +5,6 @@ import { motion } from 'framer-motion'
 import { 
   Users, 
   Search, 
-  Filter,
   Plus,
   Edit,
   Trash2,
@@ -16,9 +15,10 @@ import {
   Phone,
   Calendar
 } from 'lucide-react'
-import { useRouter } from 'next/navigation'
 import Sidebar from '../../../components/Sidebar'
 import CustomSelect from '../../../components/CustomSelect'
+import { apiFetchJson } from '../../../../lib/api'
+import { useAuthenticatedUser } from '../../../hooks/useAuthenticatedUser'
 
 interface User {
   id: string
@@ -36,17 +36,9 @@ interface User {
   }
 }
 
-interface CurrentUser {
-  id: string
-  name: string
-  email: string
-  role: string
-}
-
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([])
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loadingUsers, setLoadingUsers] = useState(true)
   const [error, setError] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [filterRole, setFilterRole] = useState<'all' | 'admin' | 'client'>('all')
@@ -66,66 +58,27 @@ export default function UsersPage() {
     role: 'client' as 'admin' | 'client',
     password: ''
   })
-  const router = useRouter()
+  const { user, loading, logout } = useAuthenticatedUser('admin')
 
   useEffect(() => {
-    const token = localStorage.getItem('token')
-    if (!token) {
-      router.push('/login')
+    if (loading || !user) {
       return
     }
 
-    try {
-      const payload = JSON.parse(atob(token.split('.')[1]))
-      if (payload.role !== 'admin') {
-        router.push('/dashboard/client')
-        return
+    const fetchUsers = async () => {
+      try {
+        setError('')
+        const data = await apiFetchJson<{ users?: User[] }>('/admin/users')
+        setUsers(data.users || [])
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Erro ao carregar usuarios')
+      } finally {
+        setLoadingUsers(false)
       }
-      setCurrentUser({
-        id: payload.userId,
-        name: payload.name || 'Admin',
-        email: payload.email,
-        role: payload.role
-      })
-    } catch (err) {
-      router.push('/login')
-      return
     }
 
-    fetchUsers(token)
-  }, [])
-
-
-
-  const fetchUsers = async (token: string) => {
-    try {
-      setError('')
-      // Buscando dados reais da API
-      const response = await fetch('http://localhost:3001/api/admin/users', {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      })
-
-      if (!response.ok) {
-        throw new Error('Erro ao buscar usuários')
-      }
-
-      const data = await response.json()
-      setUsers(data.users || [])
-    } catch (err) {
-      setError('Erro ao carregar usuários')
-      console.error(err)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleLogout = () => {
-    localStorage.removeItem('token')
-    router.push('/login')
-  }
+    void fetchUsers()
+  }, [loading, user])
 
   const closeModals = () => {
     setViewModalOpen(false)
@@ -180,22 +133,13 @@ export default function UsersPage() {
   const createUser = async () => {
     try {
       setActionLoading(true)
-      const token = localStorage.getItem('token')
-      
-      const response = await fetch('http://localhost:3001/api/admin/users', {
+      const data = await apiFetchJson<{ user: User }>('/admin/users', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify(createFormData)
       })
-
-      if (!response.ok) {
-        throw new Error('Erro ao criar usuário')
-      }
-
-      const data = await response.json()
       
       // Adicionar o novo usuário à lista
       setUsers(prev => [...prev, data.user])
@@ -212,19 +156,13 @@ export default function UsersPage() {
   const updateUserStatus = async (userId: string, newStatus: string) => {
     setActionLoading(true)
     try {
-      const token = localStorage.getItem('token')
-      const response = await fetch(`http://localhost:3001/api/admin/users/${userId}/status`, {
+      await apiFetchJson(`/admin/users/${userId}/status`, {
         method: 'PATCH',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({ status: newStatus })
       })
-
-      if (!response.ok) {
-        throw new Error('Erro ao atualizar status')
-      }
 
       // Atualizar a lista de usuários
       setUsers(users.map(user => 
@@ -245,18 +183,12 @@ export default function UsersPage() {
     
     setActionLoading(true)
     try {
-      const token = localStorage.getItem('token')
-      const response = await fetch(`http://localhost:3001/api/admin/users/${selectedUser.id}`, {
+      await apiFetchJson(`/admin/users/${selectedUser.id}`, {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         }
       })
-
-      if (!response.ok) {
-        throw new Error('Erro ao excluir usuário')
-      }
 
       // Remover o usuário da lista
       setUsers(users.filter(user => user.id !== selectedUser.id))
@@ -321,7 +253,7 @@ export default function UsersPage() {
     return matchesSearch && matchesRole && matchesStatus
   })
 
-  if (loading) {
+  if (loading || loadingUsers) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white"></div>
@@ -336,7 +268,7 @@ export default function UsersPage() {
           <h2 className="text-2xl font-bold mb-4">Erro</h2>
           <p>{error}</p>
           <button 
-            onClick={() => router.push('/dashboard/admin')}
+            onClick={() => window.location.assign('/dashboard/admin')}
             className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
           >
             Voltar ao Dashboard
@@ -350,8 +282,8 @@ export default function UsersPage() {
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex">
       <Sidebar 
         userRole="admin" 
-        userName={currentUser?.name || 'Admin'} 
-        onLogout={handleLogout} 
+        userName={user?.name || 'Admin'} 
+        onLogout={() => void logout()} 
       />
 
       <main className="flex-1 lg:ml-0 p-4 lg:p-8 pt-16 lg:pt-8">

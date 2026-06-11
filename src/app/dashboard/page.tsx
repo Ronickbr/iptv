@@ -2,33 +2,41 @@
 
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import { apiFetchJson, clearLegacyToken } from '../../lib/api'
+import { useInstallationStatus } from '../hooks/useInstallationStatus'
 
 export default function DashboardRedirect() {
   const router = useRouter()
+  const { loading: installationLoading, status } = useInstallationStatus({
+    redirectIfSetupRequired: true
+  })
 
   useEffect(() => {
-    const token = localStorage.getItem('token')
-    
-    if (!token) {
-      router.push('/login')
+    if (installationLoading || !status?.installed) {
       return
     }
 
-    try {
-      // Decode token to get user role
-      const payload = JSON.parse(atob(token.split('.')[1]))
-      
-      if (payload.role === 'admin') {
-        router.push('/dashboard/admin')
-      } else {
-        router.push('/dashboard/client')
+    const loadProfile = async () => {
+      try {
+        clearLegacyToken()
+        const data = await apiFetchJson<{
+          profile: {
+            role: 'admin' | 'client'
+          }
+        }>('/user/profile')
+
+        if (data.profile.role === 'admin') {
+          router.replace('/dashboard/admin')
+        } else {
+          router.replace('/dashboard/client')
+        }
+      } catch {
+        router.replace('/login')
       }
-    } catch (error) {
-      // Invalid token, redirect to login
-      localStorage.removeItem('token')
-      router.push('/login')
     }
-  }, [])
+
+    void loadProfile()
+  }, [installationLoading, router, status?.installed])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">

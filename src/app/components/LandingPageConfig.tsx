@@ -1,5 +1,6 @@
 'use client'
 
+import Image from 'next/image'
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { 
@@ -474,11 +475,12 @@ export default function LandingPageConfig({ onSave }: LandingPageConfigProps) {
                   <div className="bg-gray-100 border border-gray-200 rounded-xl p-6">
                     <h3 className="text-gray-900 font-semibold mb-4">Preview</h3>
                     <div className="bg-white rounded-lg p-4 inline-block border border-gray-200">
-                      <img
+                      <Image
                         src={settings.logo.url}
                         alt={settings.logo.alt}
                         width={settings.logo.width}
                         height={settings.logo.height}
+                        unoptimized
                         className="rounded"
                         onError={(e) => {
                           e.currentTarget.style.display = 'none'

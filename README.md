@@ -1,190 +1,112 @@
 # IPTV Manager
 
-Um sistema completo de gerenciamento de IPTV desenvolvido com Next.js, React, Node.js e MySQL.
+Aplicacao full stack com `Next.js 14`, `Express` e `MySQL` para gerenciamento de clientes, assinaturas, indicacoes, recompensas e painel administrativo.
 
-## 🚀 Tecnologias
+## Stack
 
-- **Frontend**: Next.js 14, React 18, TypeScript, Tailwind CSS
-- **Backend**: Node.js, Express.js
-- **Banco de Dados**: MySQL 8.0
-- **Autenticação**: JWT (JSON Web Tokens)
-- **Containerização**: Docker & Docker Compose
-- **UI/UX**: Framer Motion, Lucide React Icons
+- `Next.js 14` com `TypeScript` e `Tailwind CSS`
+- `Express` como API interna
+- `MySQL 8`
+- Autenticacao por sessao com cookie `HttpOnly`
+- Deploy recomendado no `Dokploy` com `Railpack`
 
-## 📋 Funcionalidades
+## Estrutura
 
-### Landing Page
-- Design moderno e responsivo
-- Seção de recursos e benefícios
-- Planos de assinatura
-- Formulários de login e registro
+- `src/`: frontend e dashboards
+- `server/index.js`: API Express
+- `server/start-production.js`: entrypoint de producao que sobe `Next.js` + API
+- `database/schema.sql`: estrutura inicial do banco
+- `database/seed.sql`: dados de exemplo para ambiente local
+- `railpack.json`: configuracao base para build via Railpack
 
-### Sistema de Autenticação
-- Registro de usuários
-- Login seguro com JWT
-- Diferentes níveis de acesso (Admin/Cliente)
+## Desenvolvimento Local
 
-### Gerenciamento de Usuários
-- Perfis de administradores e clientes
-- Sistema de indicações com recompensas
-- Controle de dispositivos por usuário
+1. Suba o banco:
 
-### Planos e Assinaturas
-- Múltiplos planos de assinatura
-- Renovação automática
-- Histórico de pagamentos
-
-### Sistema de Recompensas
-- Pontos por indicações
-- Resgates de recompensas
-- Descontos e benefícios
-
-## 🛠️ Instalação e Configuração
-
-### Pré-requisitos
-- Docker e Docker Compose instalados
-- Node.js 18+ (para desenvolvimento local)
-
-### Executando com Docker
-
-1. Clone o repositório:
 ```bash
-git clone <url-do-repositorio>
-cd iptv-manager
+docker compose up -d
 ```
 
-2. Inicie os serviços:
+2. Copie as variaveis:
+
 ```bash
-docker-compose up -d
+copy .env.example .env
 ```
 
-3. Acesse as aplicações:
-- **Frontend**: http://localhost:3000
-- **API**: http://localhost:3001
-- **phpMyAdmin**: http://localhost:8080
+3. Instale as dependencias e rode a aplicacao:
 
-### Desenvolvimento Local
-
-1. Instale as dependências:
 ```bash
 npm install
-```
-
-2. Configure as variáveis de ambiente:
-```bash
-cp .env.local.example .env.local
-```
-
-3. Execute o desenvolvimento:
-```bash
 npm run dev
 ```
 
-## 🗄️ Banco de Dados
+4. Acesse:
 
-### Credenciais Padrão
-- **Host**: localhost:3306
-- **Usuário**: iptv_user
-- **Senha**: iptv_password
-- **Banco**: iptv_manager
-- **Root**: iptv_root_password
+- App: [http://localhost:3000](http://localhost:3000)
+- API: [http://localhost:3001/api/health](http://localhost:3001/api/health)
+- phpMyAdmin opcional: [http://localhost:8080](http://localhost:8080)
 
-### Estrutura
-O banco de dados inclui as seguintes tabelas principais:
-- `users` - Usuários do sistema
-- `clients` - Dados dos clientes
-- `admins` - Dados dos administradores
-- `subscription_plans` - Planos de assinatura
-- `subscriptions` - Assinaturas ativas
-- `channels` - Canais de TV
-- `payments` - Histórico de pagamentos
-- `devices` - Dispositivos dos clientes
-- `referrals` - Sistema de indicações
-- `rewards` - Recompensas disponíveis
+## Deploy no Dokploy
 
-## 🔐 Autenticação
+1. Crie um banco MySQL no proprio Dokploy ou use um banco externo.
+2. Crie uma aplicacao do tipo `Application`.
+3. Conecte este repositorio Git.
+4. Em `Build Type`, selecione `Railpack`.
+5. Opcionalmente fixe uma versao do Railpack no painel.
+6. Use o arquivo [`.env.dokploy.example`](file:///d:/Sites/KMKZIPTV-v2/.env.dokploy.example) como base e configure as variaveis no painel.
+7. Faça o deploy.
 
-### Usuários de Teste
-- **Admin**: admin@iptv.com / secret
-- **Cliente**: joao@email.com / secret
+### Primeiro acesso
 
-## 📡 API Endpoints
+- Se o banco ainda nao estiver preparado, a aplicacao redireciona automaticamente para `/install`.
+- O instalador preenche automaticamente host, porta, usuario e banco a partir das variaveis `DB_*` do ambiente do Dokploy.
+- Se a senha do banco ja estiver configurada no ambiente, ela pode ser reutilizada sem precisar expor o valor na tela.
+- O instalador permite informar o banco, executar a migracao inicial e criar o primeiro usuario administrador.
+- A configuracao do banco informada no instalador fica salva em `data/installer-config.json`.
 
-### Autenticação
-- `POST /api/auth/register` - Registro de usuário
-- `POST /api/auth/login` - Login
+### Variaveis recomendadas
 
-### Usuários
-- `GET /api/user/profile` - Perfil do usuário (protegido)
-
-### Dashboard
-- `GET /api/dashboard/stats` - Estatísticas (protegido)
-
-### Planos
-- `GET /api/plans` - Lista de planos
-
-### Canais
-- `GET /api/channels` - Canais disponíveis (protegido)
-
-## 🎨 Interface
-
-### Páginas Principais
-- `/` - Landing page
-- `/login` - Página de login
-- `/register` - Página de registro
-
-### Componentes
-- Header responsivo
-- Formulários com validação
-- Cards de planos
-- Seções de recursos
-- Footer informativo
-
-## 🔧 Configuração
-
-### Variáveis de Ambiente
 ```env
-# Banco de Dados
-DB_HOST=mysql
+NODE_ENV=production
+PORT=3000
+API_PORT=3001
+
+DB_HOST=seu-host-mysql
 DB_PORT=3306
-DB_USER=iptv_user
-DB_PASSWORD=iptv_password
+DB_USER=seu-usuario
+DB_PASSWORD=sua-senha
 DB_NAME=iptv_manager
 
-# JWT
-JWT_SECRET=your-super-secret-jwt-key
+JWT_SECRET=gere-uma-chave-com-32-caracteres-ou-mais
 JWT_EXPIRES_IN=7d
 
-# Next.js
-NEXTAUTH_URL=http://localhost:3000
-NEXTAUTH_SECRET=your-nextauth-secret
+NEXTAUTH_URL=https://seu-dominio.com
+NEXTAUTH_SECRET=gere-uma-chave-com-32-caracteres-ou-mais
 
-# API
-API_URL=http://localhost:3001
+APP_URL=https://seu-dominio.com
+CORS_ORIGIN=https://seu-dominio.com
+API_URL=http://127.0.0.1:3001
+SESSION_COOKIE_SECURE=true
 ```
 
-## 🚀 Deploy
+### Como funciona no Dokploy
 
-### Produção
-1. Configure as variáveis de ambiente para produção
-2. Build da aplicação:
+- O container sobe o `Next.js` na porta publica `PORT`.
+- A API Express sobe internamente em `API_PORT`.
+- O frontend usa rewrite de `/api/*` para `API_URL`.
+- Em producao, o padrao interno esperado e `http://127.0.0.1:3001`.
+
+## Comandos
+
 ```bash
+npm run dev
 npm run build
+npm run lint
+npm start
 ```
-3. Execute com Docker Compose em modo produção
 
-## 📝 Licença
+## Observacoes
 
-Este projeto está sob a licença MIT. Veja o arquivo LICENSE para mais detalhes.
-
-## 🤝 Contribuição
-
-1. Fork o projeto
-2. Crie uma branch para sua feature
-3. Commit suas mudanças
-4. Push para a branch
-5. Abra um Pull Request
-
-## 📞 Suporte
-
-Para suporte e dúvidas, entre em contato através do email: kmkz.clan@gmail.com
+- `npm start` usa o entrypoint de producao para iniciar web e API no mesmo container.
+- O repositório foi limpo para manter apenas o que e util para desenvolvimento local e deploy no Dokploy.
+- Se quiser separar frontend e API em dois servicos no futuro, o ideal e extrair a API para um servico independente.

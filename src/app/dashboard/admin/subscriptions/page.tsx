@@ -17,9 +17,10 @@ import {
   Calendar,
   User
 } from 'lucide-react'
-import { useRouter } from 'next/navigation'
 import Sidebar from '../../../components/Sidebar'
 import CustomSelect from '../../../components/CustomSelect'
+import { apiFetchJson } from '../../../../lib/api'
+import { useAuthenticatedUser } from '../../../hooks/useAuthenticatedUser'
 
 interface Subscription {
   id: string
@@ -36,17 +37,9 @@ interface Subscription {
   max_devices: number
 }
 
-interface CurrentUser {
-  id: string
-  name: string
-  email: string
-  role: string
-}
-
 export default function SubscriptionsPage() {
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([])
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loadingSubscriptions, setLoadingSubscriptions] = useState(true)
   const [error, setError] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'expired' | 'cancelled' | 'pending'>('all')
@@ -70,66 +63,27 @@ export default function SubscriptionsPage() {
     auto_renewal: true,
     max_devices: 3
   })
-  const router = useRouter()
+  const { user, loading, logout } = useAuthenticatedUser('admin')
 
   useEffect(() => {
-    const token = localStorage.getItem('token')
-    if (!token) {
-      router.push('/login')
+    if (loading || !user) {
       return
     }
 
-    try {
-      const payload = JSON.parse(atob(token.split('.')[1]))
-      if (payload.role !== 'admin') {
-        router.push('/dashboard/client')
-        return
+    const fetchSubscriptions = async () => {
+      try {
+        setError('')
+        const data = await apiFetchJson<{ subscriptions?: Subscription[] }>('/admin/subscriptions')
+        setSubscriptions(data.subscriptions || [])
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Erro ao carregar assinaturas')
+      } finally {
+        setLoadingSubscriptions(false)
       }
-      setCurrentUser({
-        id: payload.userId,
-        name: payload.name || 'Admin',
-        email: payload.email,
-        role: payload.role
-      })
-    } catch (err) {
-      router.push('/login')
-      return
     }
 
-    fetchSubscriptions(token)
-  }, [])
-
-
-
-  const fetchSubscriptions = async (token: string) => {
-    try {
-      setError('')
-      // Buscando dados reais da API
-      const response = await fetch('http://localhost:3001/api/admin/subscriptions', {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      })
-
-      if (!response.ok) {
-        throw new Error('Erro ao buscar assinaturas')
-      }
-
-      const data = await response.json()
-      setSubscriptions(data.subscriptions || [])
-    } catch (err) {
-      setError('Erro ao carregar assinaturas')
-      console.error(err)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleLogout = () => {
-    localStorage.removeItem('token')
-    router.push('/login')
-  }
+    void fetchSubscriptions()
+  }, [loading, user])
 
   // Modal handlers
   const handleViewSubscription = (subscription: Subscription) => {
@@ -187,20 +141,13 @@ export default function SubscriptionsPage() {
   const updateSubscriptionStatus = async (subscriptionId: string, newStatus: string) => {
     try {
       setActionLoading(true)
-      const token = localStorage.getItem('token')
-      
-      const response = await fetch(`http://localhost:3001/api/admin/subscriptions/${subscriptionId}/status`, {
+      await apiFetchJson(`/admin/subscriptions/${subscriptionId}/status`, {
         method: 'PATCH',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({ status: newStatus })
       })
-
-      if (!response.ok) {
-        throw new Error('Erro ao atualizar status')
-      }
 
       // Atualizar a lista local
       setSubscriptions(prev => prev.map(sub => 
@@ -210,8 +157,7 @@ export default function SubscriptionsPage() {
       setStatusModalOpen(false)
       setSelectedSubscription(null)
     } catch (err) {
-      setError('Erro ao atualizar status da assinatura')
-      console.error(err)
+      setError(err instanceof Error ? err.message : 'Erro ao atualizar status da assinatura')
     } finally {
       setActionLoading(false)
     }
@@ -248,8 +194,6 @@ export default function SubscriptionsPage() {
 
     setActionLoading(true)
     try {
-      const token = localStorage.getItem('token')
-      
       // Calcular data de fim baseada no plano
       const startDate = new Date(createFormData.start_date)
       const endDate = new Date(startDate)
@@ -271,33 +215,28 @@ export default function SubscriptionsPage() {
 
       const subscriptionData = {
         ...createFormData,
+        duration_days: Math.max(1, Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24))),
         end_date: endDate.toISOString().split('T')[0],
         status: 'active'
       }
 
-      const response = await fetch('http://localhost:3001/api/admin/subscriptions', {
+      const response = await apiFetchJson<{ subscription?: Subscription; message?: string }>('/admin/subscriptions', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify(subscriptionData)
       })
-
-      if (!response.ok) {
-        throw new Error('Erro ao criar assinatura')
-      }
-
-      const newSubscription = await response.json()
       
       // Atualizar a lista de assinaturas
-      setSubscriptions(prev => [newSubscription, ...prev])
+      if (response.subscription) {
+        setSubscriptions(prev => [response.subscription as Subscription, ...prev])
+      }
       
       closeModals()
-      alert('Assinatura criada com sucesso!')
+      alert(response.message || 'Assinatura criada com sucesso!')
     } catch (error) {
-      console.error('Erro ao criar assinatura:', error)
-      alert('Erro ao criar assinatura')
+      alert(error instanceof Error ? error.message : 'Erro ao criar assinatura')
     } finally {
        setActionLoading(false)
      }
@@ -349,7 +288,7 @@ export default function SubscriptionsPage() {
     return matchesSearch && matchesStatus && matchesPlan
   })
 
-  if (loading) {
+  if (loading || loadingSubscriptions) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white"></div>
@@ -364,7 +303,7 @@ export default function SubscriptionsPage() {
           <h2 className="text-2xl font-bold mb-4">Erro</h2>
           <p>{error}</p>
           <button 
-            onClick={() => router.push('/dashboard/admin')}
+            onClick={() => window.location.assign('/dashboard/admin')}
             className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
           >
             Voltar ao Dashboard
@@ -378,8 +317,8 @@ export default function SubscriptionsPage() {
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex">
       <Sidebar 
         userRole="admin" 
-        userName={currentUser?.name || 'Admin'} 
-        onLogout={handleLogout} 
+        userName={user?.name || 'Admin'} 
+        onLogout={() => void logout()} 
       />
 
       <main className="flex-1 lg:ml-0 p-4 lg:p-8 pt-16 lg:pt-8">

@@ -6,6 +6,8 @@ import { Eye, EyeOff, ArrowLeft, CheckCircle } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import Image from 'next/image'
+import { apiFetchJson, isInstallRequiredError } from '../../lib/api'
+import { useInstallationStatus } from '../hooks/useInstallationStatus'
 
 export default function RegisterPage() {
   const [showPassword, setShowPassword] = useState(false)
@@ -30,6 +32,9 @@ export default function RegisterPage() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
   const router = useRouter()
+  const { loading: installationLoading } = useInstallationStatus({
+    redirectIfSetupRequired: true
+  })
 
   // Preencher automaticamente o código de indicação e dados do plano se houver parâmetros na URL
   useEffect(() => {
@@ -81,7 +86,12 @@ export default function RegisterPage() {
     }
 
     try {
-      const response = await fetch('http://localhost:3001/api/auth/register', {
+      const data = await apiFetchJson<{
+        user?: {
+          id?: string
+        }
+        userId?: string
+      }>('/auth/register', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -95,32 +105,30 @@ export default function RegisterPage() {
         }),
       })
 
-      const data = await response.json()
-
-      if (response.ok) {
-        setSuccess(true)
-        setTimeout(() => {
-          // Se há um plano selecionado, redireciona para pagamento, senão para login
-          if (selectedPlan.name) {
-            const paymentParams = new URLSearchParams({
-              planName: selectedPlan.name,
-              planPrice: selectedPlan.price,
-              planPeriod: selectedPlan.period,
-              ...(selectedPlan.originalPrice && { planOriginalPrice: selectedPlan.originalPrice }),
-              ...(selectedPlan.discount && { planDiscount: selectedPlan.discount }),
-              userId: data.userId || '',
-              userEmail: formData.email
-            })
-            router.push(`/payment?${paymentParams.toString()}`)
-          } else {
-            router.push('/login')
-          }
-        }, 2000)
-      } else {
-        setError(data.message || 'Erro ao criar conta')
-      }
+      setSuccess(true)
+      setTimeout(() => {
+        if (selectedPlan.name) {
+          const paymentParams = new URLSearchParams({
+            planName: selectedPlan.name,
+            planPrice: selectedPlan.price,
+            planPeriod: selectedPlan.period,
+            ...(selectedPlan.originalPrice && { planOriginalPrice: selectedPlan.originalPrice }),
+            ...(selectedPlan.discount && { planDiscount: selectedPlan.discount }),
+            userId: data.user?.id || data.userId || '',
+            userEmail: formData.email
+          })
+          router.push(`/payment?${paymentParams.toString()}`)
+        } else {
+          router.push('/login')
+        }
+      }, 2000)
     } catch (error) {
-      setError('Erro de conexão. Tente novamente.')
+      if (isInstallRequiredError(error)) {
+        router.replace('/install')
+        return
+      }
+
+      setError(error instanceof Error ? error.message : 'Erro de conexao. Tente novamente.')
     } finally {
       setIsLoading(false)
     }
@@ -132,6 +140,14 @@ export default function RegisterPage() {
       ...formData,
       [name]: type === 'checkbox' ? checked : value
     })
+  }
+
+  if (installationLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-500 via-purple-600 to-purple-800 flex items-center justify-center p-4">
+        <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-white"></div>
+      </div>
+    )
   }
 
   if (success) {

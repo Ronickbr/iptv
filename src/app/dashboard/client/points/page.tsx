@@ -21,8 +21,9 @@ import {
   Trophy,
   Crown
 } from 'lucide-react'
-import { useRouter } from 'next/navigation'
 import Sidebar from '../../../components/Sidebar'
+import { apiFetchJson } from '../../../../lib/api'
+import { useAuthenticatedUser } from '../../../hooks/useAuthenticatedUser'
 
 interface PointsData {
   current_points: number
@@ -63,23 +64,15 @@ interface EarningMethod {
   action: string
 }
 
-interface CurrentUser {
-  id: string
-  name: string
-  email: string
-  role: string
-}
-
 export default function PointsPage() {
   const [pointsData, setPointsData] = useState<PointsData | null>(null)
   const [pointsHistory, setPointsHistory] = useState<PointsHistory[]>([])
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loadingPoints, setLoadingPoints] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [copiedCode, setCopiedCode] = useState(false)
   const [activeTab, setActiveTab] = useState<'overview' | 'earn' | 'history'>('overview')
-  const router = useRouter()
+  const { user, loading, logout } = useAuthenticatedUser('client')
 
   const earningMethods: EarningMethod[] = [
     {
@@ -139,59 +132,24 @@ export default function PointsPage() {
   ]
 
   useEffect(() => {
-    const token = localStorage.getItem('token')
-    if (!token) {
-      router.push('/login')
+    if (loading || !user) {
       return
     }
 
-    try {
-      const payload = JSON.parse(atob(token.split('.')[1]))
-      if (payload.role !== 'client') {
-        router.push('/dashboard/admin')
-        return
+    const fetchPointsData = async () => {
+      try {
+        const data = await apiFetchJson<{ pointsData: PointsData; history?: PointsHistory[] }>('/client/points')
+        setPointsData(data.pointsData)
+        setPointsHistory(data.history || [])
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Erro ao carregar dados de pontos')
+      } finally {
+        setLoadingPoints(false)
       }
-      setCurrentUser({
-        id: payload.userId,
-        name: payload.name || 'Cliente',
-        email: payload.email,
-        role: payload.role
-      })
-    } catch (err) {
-      router.push('/login')
-      return
     }
 
-    fetchPointsData(token)
-  }, [])
-
-  const fetchPointsData = async (token: string) => {
-    try {
-      const response = await fetch('http://localhost:3001/api/client/points', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      })
-
-      if (!response.ok) {
-        throw new Error('Erro ao carregar dados de pontos')
-      }
-
-      const data = await response.json()
-      setPointsData(data.pointsData)
-      setPointsHistory(data.history || [])
-    } catch (err) {
-      setError('Erro ao carregar dados de pontos')
-      console.error(err)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleLogout = () => {
-    localStorage.removeItem('token')
-    router.push('/login')
-  }
+    void fetchPointsData()
+  }, [loading, user])
 
   const copyReferralCode = () => {
     if (pointsData?.referral_code) {
@@ -251,7 +209,7 @@ export default function PointsPage() {
     }
   }
 
-  if (loading) {
+  if (loading || loadingPoints) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white"></div>
@@ -266,7 +224,7 @@ export default function PointsPage() {
           <h2 className="text-2xl font-bold mb-4">Erro</h2>
           <p>{error}</p>
           <button 
-            onClick={() => router.push('/dashboard/client')}
+            onClick={() => window.location.assign('/dashboard/client')}
             className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
           >
             Voltar ao Dashboard
@@ -280,8 +238,8 @@ export default function PointsPage() {
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex">
       <Sidebar 
         userRole="client" 
-        userName={currentUser?.name || 'Cliente'} 
-        onLogout={handleLogout} 
+        userName={user?.name || 'Cliente'} 
+        onLogout={() => void logout()} 
       />
 
       <main className="flex-1 lg:ml-0 p-4 lg:p-8 pt-16 lg:pt-8">

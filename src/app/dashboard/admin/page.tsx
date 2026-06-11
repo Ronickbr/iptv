@@ -11,8 +11,9 @@ import {
   BarChart3,
   TrendingUp
 } from 'lucide-react'
-import { useRouter } from 'next/navigation'
 import Sidebar from '../../components/Sidebar'
+import { apiFetchJson } from '../../../lib/api'
+import { useAuthenticatedUser } from '../../hooks/useAuthenticatedUser'
 
 interface AdminStats {
   totalUsers: number
@@ -20,76 +21,32 @@ interface AdminStats {
   totalRevenue: number
 }
 
-interface User {
-  id: string
-  name: string
-  email: string
-  role: string
-}
-
 export default function AdminDashboard() {
   const [stats, setStats] = useState<AdminStats | null>(null)
-  const [user, setUser] = useState<User | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loadingStats, setLoadingStats] = useState(true)
   const [error, setError] = useState('')
-  const router = useRouter()
+  const { user, loading, logout } = useAuthenticatedUser('admin')
 
   useEffect(() => {
-    const token = localStorage.getItem('token')
-    if (!token) {
-      router.push('/login')
+    if (loading || !user) {
       return
     }
 
-    // Decode token to get user info
-    try {
-      const payload = JSON.parse(atob(token.split('.')[1]))
-      if (payload.role !== 'admin') {
-        router.push('/dashboard/client')
-        return
+    const fetchStats = async () => {
+      try {
+        const data = await apiFetchJson<{ stats: AdminStats }>('/dashboard/stats')
+        setStats(data.stats)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Erro ao carregar dados do dashboard')
+      } finally {
+        setLoadingStats(false)
       }
-      setUser({
-        id: payload.userId,
-        name: payload.name || 'Admin',
-        email: payload.email,
-        role: payload.role
-      })
-    } catch (err) {
-      router.push('/login')
-      return
     }
 
-    fetchStats(token)
-  }, [])
+    void fetchStats()
+  }, [loading, user])
 
-  const fetchStats = async (token: string) => {
-    try {
-      const response = await fetch('/api/dashboard/stats', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      })
-
-      if (!response.ok) {
-        throw new Error('Erro ao carregar estatísticas')
-      }
-
-      const data = await response.json()
-      setStats(data.stats)
-    } catch (err) {
-      setError('Erro ao carregar dados do dashboard')
-      console.error(err)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleLogout = () => {
-    localStorage.removeItem('token')
-    router.push('/login')
-  }
-
-  if (loading) {
+  if (loading || loadingStats) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white"></div>
@@ -104,7 +61,7 @@ export default function AdminDashboard() {
           <h2 className="text-2xl font-bold mb-4">Erro</h2>
           <p>{error}</p>
           <button 
-            onClick={() => router.push('/login')}
+            onClick={() => window.location.assign('/login')}
             className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
           >
             Voltar ao Login
@@ -120,7 +77,7 @@ export default function AdminDashboard() {
       <Sidebar 
         userRole="admin" 
         userName={user?.name || 'Admin'} 
-        onLogout={handleLogout} 
+        onLogout={() => void logout()} 
       />
 
       {/* Main Content */}

@@ -1,5 +1,6 @@
 'use client'
 
+import Image from 'next/image'
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { 
@@ -34,9 +35,10 @@ import {
   Clock,
   Target
 } from 'lucide-react'
-import { useRouter } from 'next/navigation'
 import Sidebar from '../../../components/Sidebar'
 import CustomSelect from '../../../components/CustomSelect'
+import { apiFetchJson } from '../../../../lib/api'
+import { useAuthenticatedUser } from '../../../hooks/useAuthenticatedUser'
 
 interface UserProfile {
   id: string
@@ -81,17 +83,9 @@ interface UserProfile {
   }
 }
 
-interface CurrentUser {
-  id: string
-  name: string
-  email: string
-  role: string
-}
-
 export default function ProfilePage() {
   const [profile, setProfile] = useState<UserProfile | null>(null)
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loadingProfile, setLoadingProfile] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [activeTab, setActiveTab] = useState<'profile' | 'security' | 'preferences' | 'stats'>('profile')
@@ -108,7 +102,7 @@ export default function ProfilePage() {
     new: false,
     confirm: false
   })
-  const router = useRouter()
+  const { user, loading, logout } = useAuthenticatedUser('client')
 
   const tabs = [
     { id: 'profile', label: 'Perfil', icon: User },
@@ -118,99 +112,57 @@ export default function ProfilePage() {
   ]
 
   useEffect(() => {
-    const token = localStorage.getItem('token')
-    if (!token) {
-      router.push('/login')
+    if (loading || !user) {
       return
     }
 
-    try {
-      const payload = JSON.parse(atob(token.split('.')[1]))
-      if (payload.role !== 'client') {
-        router.push('/dashboard/admin')
-        return
-      }
-      setCurrentUser({
-        id: payload.userId,
-        name: payload.name || 'Cliente',
-        email: payload.email,
-        role: payload.role
-      })
-    } catch (err) {
-      router.push('/login')
-      return
-    }
-
-    fetchProfile(token)
-  }, [])
-
-  const fetchProfile = async (token: string) => {
-    try {
-      const response = await fetch('http://localhost:3001/api/user/profile', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      })
-
-      if (!response.ok) {
-        throw new Error('Erro ao carregar perfil')
-      }
-
-      const data = await response.json()
-      const profileData = {
-        ...data.profile,
-        preferences: data.profile.preferences || {
-          language: 'pt-BR',
-          timezone: 'America/Sao_Paulo',
-          notifications: {
-            email: true,
-            sms: false,
-            push: true
+    const fetchProfile = async () => {
+      try {
+        const data = await apiFetchJson<{ profile: Partial<UserProfile> & Pick<UserProfile, 'id' | 'name' | 'email' | 'created_at'> }>('/user/profile')
+        const profileData = {
+          ...data.profile,
+          preferences: data.profile.preferences || {
+            language: 'pt-BR',
+            timezone: 'America/Sao_Paulo',
+            notifications: {
+              email: true,
+              sms: false,
+              push: true
+            },
+            privacy: {
+              profile_visibility: 'private',
+              show_activity: false
+            }
           },
-          privacy: {
-            profile_visibility: 'private',
-            show_activity: false
+          stats: data.profile.stats || {
+            total_points: 0,
+            current_points: 0,
+            level: 'Bronze',
+            referrals: 0,
+            watch_time: 0
           }
-        },
-        stats: data.profile.stats || {
-          total_points: 0,
-          current_points: 0,
-          level: 'Bronze',
-          referrals: 0,
-          watch_time: 0
-        }
+        } as UserProfile
+        setProfile(profileData)
+        setEditedProfile(profileData)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Erro ao carregar perfil')
+      } finally {
+        setLoadingProfile(false)
       }
-      setProfile(profileData)
-      setEditedProfile(profileData)
-    } catch (err) {
-      setError('Erro ao carregar perfil')
-      console.error(err)
-    } finally {
-      setLoading(false)
     }
-  }
 
-  const handleLogout = () => {
-    localStorage.removeItem('token')
-    router.push('/login')
-  }
+    void fetchProfile()
+  }, [loading, user])
 
   const handleSaveProfile = async () => {
     try {
       setError('')
       setSuccess('')
 
-      const token = localStorage.getItem('token')
-      if (!token) {
-        router.push('/login')
-        return
-      }
-
-      const response = await fetch('http://localhost:3001/api/client/profile', {
+      await apiFetchJson('/client/profile', {
         method: 'PUT',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           name: editedProfile.name,
@@ -220,16 +172,12 @@ export default function ProfilePage() {
         })
       })
 
-      if (!response.ok) {
-        throw new Error('Erro ao salvar perfil')
-      }
-      
       setProfile(editedProfile as UserProfile)
       setIsEditing(false)
       setSuccess('Perfil atualizado com sucesso!')
       setTimeout(() => setSuccess(''), 3000)
     } catch (err) {
-      setError('Erro ao salvar perfil')
+      setError(err instanceof Error ? err.message : 'Erro ao salvar perfil')
     }
   }
 
@@ -239,8 +187,8 @@ export default function ProfilePage() {
       return
     }
     
-    if (passwordData.new_password.length < 6) {
-      setError('A nova senha deve ter pelo menos 6 caracteres')
+    if (passwordData.new_password.length < 8) {
+      setError('A nova senha deve ter pelo menos 8 caracteres')
       return
     }
     
@@ -289,7 +237,7 @@ export default function ProfilePage() {
     }
   }
 
-  if (loading) {
+  if (loading || loadingProfile) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white"></div>
@@ -304,7 +252,7 @@ export default function ProfilePage() {
           <h2 className="text-2xl font-bold mb-4">Erro</h2>
           <p>{error}</p>
           <button 
-            onClick={() => router.push('/dashboard/client')}
+            onClick={() => window.location.assign('/dashboard/client')}
             className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
           >
             Voltar ao Dashboard
@@ -318,8 +266,8 @@ export default function ProfilePage() {
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex">
       <Sidebar 
         userRole="client" 
-        userName={currentUser?.name || 'Cliente'} 
-        onLogout={handleLogout} 
+        userName={user?.name || 'Cliente'} 
+        onLogout={() => void logout()} 
       />
 
       <main className="flex-1 lg:ml-0 p-4 lg:p-8 pt-16 lg:pt-8">
@@ -358,9 +306,16 @@ export default function ProfilePage() {
             <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between">
               <div className="flex items-center space-x-4">
                 <div className="relative">
-                  <div className="w-20 h-20 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center">
+                  <div className="w-20 h-20 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center overflow-hidden">
                     {profile.avatar ? (
-                      <img src={profile.avatar} alt="Avatar" className="w-full h-full rounded-full object-cover" />
+                      <Image
+                        src={profile.avatar}
+                        alt="Avatar"
+                        width={80}
+                        height={80}
+                        unoptimized
+                        className="w-full h-full rounded-full object-cover"
+                      />
                     ) : (
                       <User className="w-10 h-10 text-white" />
                     )}
