@@ -6,7 +6,6 @@ const nextConfig = {
     domains: ['localhost', 'i.imgur.com'],
     unoptimized: process.env.NODE_ENV === 'production',
   },
-  output: 'standalone',
   compress: true,
   experimental: {
     serverComponentsExternalPackages: ['mysql2'],

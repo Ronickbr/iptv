@@ -65,14 +65,8 @@ startProcess('api', process.execPath, [path.join(rootDir, 'server', 'index.js')]
   API_PORT: apiPort
 })
 
-const fs = require('fs')
-const nextStandaloneServerPath = path.join(rootDir, '.next', 'standalone', 'server.js')
-const useStandalone = fs.existsSync(nextStandaloneServerPath)
-
 const command = process.execPath
-const args = useStandalone 
-  ? [nextStandaloneServerPath] 
-  : [require.resolve('next/dist/bin/next'), 'start', '-H', '0.0.0.0', '-p', webPort]
+const args = [require.resolve('next/dist/bin/next'), 'start', '-H', '0.0.0.0', '-p', webPort]
 
 startProcess('web', command, args, {
   ...sharedEnv,
