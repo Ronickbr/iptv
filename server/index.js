@@ -3309,12 +3309,13 @@ app.use('*', (req, res) => {
 
 // Start server
 async function startServer() {
-  await testConnection()
-  
   app.listen(PORT, HOST, () => {
     console.log(`🚀 Server running on ${HOST}:${PORT}`)
     console.log(`📊 API Health: http://127.0.0.1:${PORT}/api/health`)
   })
+  
+  // Test connection without blocking server startup so healthchecks can pass
+  testConnection().catch(console.error)
 }
 
 startServer().catch(console.error)
