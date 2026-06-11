@@ -9,7 +9,7 @@ services:
       MYSQL_USER: iptv_user
       MYSQL_PASSWORD: iptv_password
     ports:
-      - "127.0.0.1:3306:3306"
+      - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
@@ -37,7 +37,7 @@ services:
       PMA_PASSWORD: iptv_root_password
       MYSQL_ROOT_PASSWORD: iptv_root_password
     ports:
-      - "127.0.0.1:8080:80"
+      - "8080:80"
     depends_on:
       - mysql
     networks:

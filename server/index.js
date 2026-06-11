@@ -6,7 +6,11 @@ const jwt = require('jsonwebtoken')
 const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
-require('dotenv').config()
+const dotenvLocalPath = path.resolve(__dirname, '..', '.env.local')
+const dotenvPath = path.resolve(__dirname, '..', '.env')
+require('dotenv').config({
+  path: fs.existsSync(dotenvLocalPath) ? dotenvLocalPath : dotenvPath
+})
 
 const app = express()
 const PORT = process.env.API_PORT || 3001

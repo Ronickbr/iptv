@@ -85,10 +85,10 @@ export default function RewardsPage() {
 
     const fetchRewardsData = async () => {
       try {
-        const [rewardsData, redeemedData, pointsData] = await Promise.all([
+        // Fetch rewards and redeemed in parallel; fetch points separately to handle errors independently
+        const [rewardsData, redeemedData] = await Promise.all([
           apiFetchJson<{ rewards?: any[] }>('/client/rewards'),
-          apiFetchJson<{ redeemed_rewards?: RedeemedReward[] }>('/client/rewards/redeemed'),
-          apiFetchJson<{ pointsData?: UserPoints; user_points?: { current_points?: number; level?: { name?: string } } }>('/client/points')
+          apiFetchJson<{ redeemed_rewards?: RedeemedReward[] }>('/client/rewards/redeemed')
         ])
 
         const processedRewards = (rewardsData.rewards || []).map((reward: any) => ({
@@ -104,12 +104,29 @@ export default function RewardsPage() {
 
         setRewards(processedRewards)
         setRedeemedRewards(redeemedData.redeemed_rewards || [])
-        setUserPoints({
-          current_points: pointsData.pointsData?.current_points || pointsData.user_points?.current_points || 0,
-          level: pointsData.pointsData?.level || pointsData.user_points?.level?.name || 'Inicial'
-        })
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Erro ao carregar dados. Tente novamente.')
+      }
+
+      // Fetch points separately so a failure here doesn't block the rewards list
+      try {
+        const pointsData = await apiFetchJson<{
+          pointsData?: { current_points?: number; level?: { name?: string } | string };
+          user_points?: { current_points?: number; level?: { name?: string } | string }
+        }>('/client/points')
+
+        const rawLevel = (pointsData.pointsData as any)?.level ?? (pointsData.user_points as any)?.level
+        const levelName = typeof rawLevel === 'object' && rawLevel !== null
+          ? (rawLevel.name ?? 'Inicial')
+          : (typeof rawLevel === 'string' ? rawLevel : 'Inicial')
+
+        setUserPoints({
+          current_points: (pointsData.pointsData as any)?.current_points ?? (pointsData.user_points as any)?.current_points ?? 0,
+          level: levelName
+        })
+      } catch {
+        // Points failed — show zero but don't block the page
+        setUserPoints({ current_points: 0, level: 'Inicial' })
       } finally {
         setLoadingRewards(false)
       }
@@ -159,10 +176,9 @@ export default function RewardsPage() {
         })
       })
       
-      const [rewardsData, redeemedData, pointsData] = await Promise.all([
+      const [rewardsData, redeemedData] = await Promise.all([
         apiFetchJson<{ rewards?: any[] }>('/client/rewards'),
-        apiFetchJson<{ redeemed_rewards?: RedeemedReward[] }>('/client/rewards/redeemed'),
-        apiFetchJson<{ pointsData?: UserPoints; user_points?: { current_points?: number; level?: { name?: string } } }>('/client/points')
+        apiFetchJson<{ redeemed_rewards?: RedeemedReward[] }>('/client/rewards/redeemed')
       ])
 
       setRewards((rewardsData.rewards || []).map((nextReward: any) => ({
@@ -176,10 +192,23 @@ export default function RewardsPage() {
         color: getRewardColor(nextReward.category || 'product')
       })))
       setRedeemedRewards(redeemedData.redeemed_rewards || [])
-      setUserPoints({
-        current_points: pointsData.pointsData?.current_points || pointsData.user_points?.current_points || 0,
-        level: pointsData.pointsData?.level || pointsData.user_points?.level?.name || 'Inicial'
-      })
+
+      try {
+        const pointsData = await apiFetchJson<{
+          pointsData?: { current_points?: number; level?: { name?: string } | string };
+          user_points?: { current_points?: number; level?: { name?: string } | string }
+        }>('/client/points')
+        const rawLevel = (pointsData.pointsData as any)?.level ?? (pointsData.user_points as any)?.level
+        const levelName = typeof rawLevel === 'object' && rawLevel !== null
+          ? (rawLevel.name ?? 'Inicial')
+          : (typeof rawLevel === 'string' ? rawLevel : 'Inicial')
+        setUserPoints({
+          current_points: (pointsData.pointsData as any)?.current_points ?? (pointsData.user_points as any)?.current_points ?? 0,
+          level: levelName
+        })
+      } catch {
+        // Keep existing points if refetch fails
+      }
       
       setShowRedeemModal(null)
       setSuccess(`Recompensa "${reward.title}" resgatada com sucesso!`)
