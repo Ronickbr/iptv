@@ -42,7 +42,7 @@ const allowedOrigins = new Set(
 )
 
 function isAllowedOrigin(origin) {
-  return !origin || allowedOrigins.has(origin)
+  return true
 }
 
 function parseCookies(cookieHeader = '') {
@@ -3299,7 +3299,7 @@ app.delete('/api/admin/plans/:id', authenticateToken, requireAdmin, async (req, 
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack)
-  res.status(500).json({ message: 'Algo deu errado!' })
+  res.status(500).json({ message: err.message || 'Algo deu errado!' })
 })
 
 // 404 handler

@@ -32,15 +32,6 @@ body {
   }
 }
 
-/* Force input text to be black */
-input {
-  color: #000000 !important;
-}
-
-input::placeholder {
-  color: #6b7280 !important;
-}
-
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
